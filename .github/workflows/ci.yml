@@ -6,14 +6,27 @@ on:
   pull_request:
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   test:
     runs-on: ubuntu-latest
     services:
+      # Throwaway Postgres container, torn down at the end of the job —
+      # this credential never touches anything outside this CI run.
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: opspilot
-          POSTGRES_PASSWORD: opspilot
+          POSTGRES_PASSWORD: ci-run-only-not-a-secret
           POSTGRES_DB: opspilot
         ports:
           - 5432:5432
@@ -24,8 +37,8 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql+psycopg://opspilot:opspilot@localhost:5432/opspilot
-      API_KEY: ci-test-key
+      DATABASE_URL: postgresql+psycopg://opspilot:ci-run-only-not-a-secret@localhost:5432/opspilot
+      API_KEY: ci-run-only-not-a-secret
       CORS_ORIGINS: http://localhost:3000
 
     steps:

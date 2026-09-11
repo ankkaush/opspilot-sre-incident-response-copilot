@@ -103,7 +103,7 @@ in the environment (tests assert against whatever key is actually configured
 
 ```bash
 docker compose up -d db
-export DATABASE_URL=postgresql+psycopg://opspilot:opspilot@localhost:5432/opspilot
+export DATABASE_URL=postgresql+psycopg://opspilot:local-dev-only-not-a-secret@localhost:5432/opspilot
 export API_KEY=test-key
 export CORS_ORIGINS=http://localhost:3000
 alembic upgrade head
@@ -112,6 +112,26 @@ pytest -q
 
 `test_migrations.py` deliberately downgrades and re-upgrades the schema as
 part of the round-trip check — don't point it at a database you care about.
+
+## Secrets & security
+
+This repository is public. The rules that keeps it safe to be public:
+
+- `.env` is gitignored and must never be committed. `.env.example` is the
+  only committed env file, and every value in it is a placeholder — never a
+  real credential.
+- Nothing in source code, Docker files, CI config, tests, or docs contains a
+  real secret. Where a container or CI job needs *some* credential value
+  (the local Postgres container, the CI Postgres service), it's an obviously
+  fake, human-readable placeholder scoped to that ephemeral container —
+  never reused anywhere real.
+- CI runs [gitleaks](https://github.com/gitleaks/gitleaks) on every push and
+  PR to catch anything that looks like a committed secret before it lands.
+- When a new phase introduces a new external service or API, `.env.example`
+  gets a new placeholder entry in the same commit — never the real value.
+
+If you ever find a real secret in this repo, treat it as already
+compromised: rotate it immediately, then remove it.
 
 ## Project layout
 

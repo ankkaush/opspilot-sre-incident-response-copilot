@@ -3,7 +3,11 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: opspilot
-      POSTGRES_PASSWORD: opspilot
+      # Local-only throwaway credential for the ephemeral dev/CI container —
+      # never used for anything reachable outside this compose network.
+      # Override with a real POSTGRES_PASSWORD env var if you ever expose
+      # this port beyond localhost.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-only-not-a-secret}
       POSTGRES_DB: opspilot
     ports:
       - "${DB_HOST_PORT:-5432}:5432"
@@ -18,8 +22,10 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://opspilot:opspilot@db:5432/opspilot
+      DATABASE_URL: postgresql+psycopg://opspilot:${POSTGRES_PASSWORD:-local-dev-only-not-a-secret}@db:5432/opspilot
       API_KEY: ${API_KEY:-dev-local-only-key}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
