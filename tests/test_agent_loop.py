@@ -1,7 +1,10 @@
-"""Loop-level tests using a scripted model client — no network access, no API
-key. These exercise exactly what v0.1 Phase 2's "done when" and testing
-requirements ask for: a full investigation producing a grounded diagnosis,
-and the deterministic ceilings/validation that stop a misbehaving loop.
+"""Full-graph integration tests, driven through the public `investigate()`
+entrypoint with a scripted model client — no network access, no API key.
+As of v0.2 Phase 1 this exercises the LangGraph state machine end to end
+rather than the retired while-loop; the point of these tests hasn't
+changed — a full investigation should still produce a grounded diagnosis,
+and the deterministic ceilings/validation should still stop a misbehaving
+run — only the thing under test's internal control flow has.
 """
 
 from opspilot.agent.loop import investigate
@@ -36,6 +39,37 @@ def test_happy_path_produces_grounded_diagnosis(db_session, checkout_scenario):
     assert result.evidence_trail[0].tool_name == "get_recent_deployments"
     assert result.evidence_trail[0].error is None
     assert result.evidence_trail[2].tool_name == "submit_diagnosis"
+    # New in v0.2 Phase 1 — the graph's hypothesize/classify_risk nodes:
+    assert result.evidence_grounded is True
+    assert result.ungrounded_evidence == []
+    assert result.risk_tier == "medium"
+
+
+def test_full_graph_diagnoses_the_payments_scenario_as_escalate(db_session, payments_scenario):
+    scripted = ScriptedChatFn(
+        responses=[
+            tool_use_response("t1", "get_dependency_status", {}),
+            tool_use_response("t2", "get_metrics", {"metric_name": "latency_ms", "since_minutes": 60}),
+            tool_use_response(
+                "t3",
+                "submit_diagnosis",
+                {
+                    "diagnosis": "Elevated payments-api latency correlates with a degraded payments "
+                    "database, with no recent deployment — root cause is infrastructure-level.",
+                    "evidence": ["dependency_status:postgres-payments", "metrics:latency_ms"],
+                    "confidence": 0.7,
+                    "recommended_action": "escalate",
+                },
+            ),
+        ]
+    )
+
+    result = investigate(db_session, payments_scenario, chat_fn=scripted, max_steps=8, max_cost_usd=1.0)
+
+    assert result.status == "diagnosed"
+    assert result.diagnosis.recommended_action == "escalate"
+    assert result.risk_tier == "none"
+    assert result.evidence_grounded is True
 
 
 def test_malformed_tool_arguments_are_rejected_without_crashing(db_session, checkout_scenario):

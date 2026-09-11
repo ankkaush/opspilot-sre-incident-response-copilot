@@ -64,3 +64,10 @@ class InvestigationResult(BaseModel):
     evidence_trail: list[ToolCallRecord] = Field(default_factory=list)
     steps_used: int
     estimated_cost_usd: float
+
+    # Set by the graph's hypothesize/classify_risk nodes (v0.2 Phase 1) —
+    # None when the investigation never reached a diagnosis, since neither
+    # node runs on the ceiling path.
+    evidence_grounded: bool | None = None
+    ungrounded_evidence: list[str] = Field(default_factory=list)
+    risk_tier: str | None = None

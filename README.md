@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.1 Phase 3 — Incident API, Audit Trail & Minimal Dashboard. v0.1 is now feature-complete.
+**Status:** v0.2 Phase 1 — LangGraph Migration. v0.1 (raw loop, tools, incident API, dashboard) is complete and frozen; v0.2 replaces the control flow with an explicit state machine.
 
 ## What exists right now
 
@@ -26,19 +26,27 @@ into this repo).
 - Read-only inspection endpoints (`/api/v1/services`, `/api/v1/scenarios`,
   `/api/v1/scenarios/{key}`) so the seeded data is verifiable over HTTP
 - Structured JSON logging, Docker Compose, GitHub Actions CI
-- **A raw agent loop** (`opspilot.agent.loop.investigate`) — no framework:
-  an explicit call-model → parse tool call → validate → execute → repeat
-  cycle over five read-only tools (`get_metrics`, `get_logs`,
+- **A LangGraph state machine** (`opspilot.agent.graph.run_investigation`,
+  reached through the unchanged `opspilot.agent.loop.investigate` entrypoint)
+  over the same five read-only tools from v0.1 (`get_metrics`, `get_logs`,
   `get_recent_deployments`, `get_dependency_status`, `get_runbook`), each
-  scoped in code to one scenario so the model can never pull evidence from a
-  different incident. The final answer is itself a validated tool call
-  (`submit_diagnosis`), not parsed free text. A hard-coded max-steps and
-  max-cost-per-run ceiling stops a misbehaving loop — that ceiling is
-  enforced by code, never left to the model's own judgment.
+  still scoped in code to one scenario. `gather_context` makes one model
+  call and one round of tool execution, self-looping via a conditional edge
+  until the model calls `submit_diagnosis` or a deterministic ceiling is
+  hit — the same control flow v0.1's while-loop had, now expressed as named,
+  independently-callable, independently-testable graph nodes instead of
+  lines inside one function. Two new nodes reached once a diagnosis exists:
+  `hypothesize` deterministically checks whether the diagnosis's cited
+  evidence was actually gathered (a hallucination guard, not a semantic
+  check), and `classify_risk` previews the risk-tier table the real v0.2
+  Phase 2 policy engine will formalize and actually enforce — informational
+  only for now, since there's nothing to gate until remediation tools exist.
+  Same max-steps and max-cost-per-run ceilings as v0.1, still enforced by
+  code, never left to the model's own judgment.
 
-There is **no remediation and no policy engine yet** — every tool is a pure
-read, and there's nothing for a policy engine to gate. That's v0.2. There is
-also no LangGraph, memory, tracing, or eval yet — those are v0.2 onward.
+There is **no remediation and no policy engine yet** — every tool is still a
+pure read, and there's nothing for a policy engine to gate. That's v0.2
+Phase 2. There is also no human-in-the-loop, memory, tracing, or eval yet.
 
 - **A real Incident API** (`opspilot.routers.incidents`): create an Incident
   against a seeded Scenario, run it (calls the agent loop and persists every
@@ -193,13 +201,17 @@ src/opspilot/
   seed/generator.py    Pure payload builder + idempotent DB seeding
   agent/tools.py       Five read-only tools, scoped per scenario
   agent/client.py      Provider-agnostic model call abstraction + retries
-  agent/loop.py        The raw agent loop (no framework)
+  agent/support.py     Shared prompt/serialization helpers (nodes + loop)
+  agent/state.py       GraphState schema, NodeDeps, initial_state()
+  agent/nodes.py       gather_context, hypothesize, classify_risk, decide
+  agent/graph.py       Builds the LangGraph state machine, runs it
+  agent/loop.py        Public investigate() entrypoint (delegates to graph.py)
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
   routers/incidents.py Incident CRUD, run endpoint, timeline endpoint
 alembic/               Migrations
 tests/                 Auth, migration round-trip, seed determinism,
-                       tool unit tests, scripted agent-loop tests,
-                       end-to-end incident tests (create/run/timeline,
-                       rate limiting, request size limits)
+                       tool unit tests, node-level unit tests, full-graph
+                       integration tests, end-to-end incident tests
+                       (create/run/timeline, rate limiting, body size limits)
 web/                   Minimal Next.js dashboard (incident list + timeline)
 ```
