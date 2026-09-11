@@ -1,6 +1,6 @@
-"""Node-level unit tests — the concrete payoff of v0.2 Phase 1's migration
-to LangGraph: each step of the investigation is now a plain function
-callable and assertable on its own, not a stretch of a while-loop body.
+"""Node-level unit tests — the concrete payoff of v0.2's migration to
+LangGraph: each step of the investigation is now a plain function callable
+and assertable on its own, not a stretch of a while-loop body.
 """
 
 import pytest
@@ -8,6 +8,7 @@ import pytest
 from opspilot.agent.nodes import (
     classify_risk,
     decide,
+    evaluate_policy,
     gather_context,
     hypothesize,
     route_after_gather_context,
@@ -195,6 +196,80 @@ def test_classify_risk_is_a_noop_without_a_diagnosis(db_session, checkout_scenar
     deps = _deps(db_session, checkout_scenario)
     update = classify_risk(initial_state(), deps=deps)
     assert update["risk_tier"] is None
+
+
+# --- evaluate_policy ---------------------------------------------------------
+
+
+def test_evaluate_policy_auto_executes_a_low_risk_action(db_session, checkout_scenario):
+    deps = _deps(db_session, checkout_scenario)
+    state = {**initial_state(), "diagnosis": _diagnosis(recommended_action="restart_service")}
+
+    update = evaluate_policy(state, deps=deps)
+
+    assert update["policy_verdict"] == "EXECUTE"
+    assert update["remediation_result"] is not None
+    assert update["remediation_result"]["action"] == "restart_service"
+    assert update["remediation_result"]["simulated"] is True
+
+
+def test_evaluate_policy_requires_approval_for_rollback_and_does_not_execute(db_session, checkout_scenario):
+    deps = _deps(db_session, checkout_scenario)
+    state = {**initial_state(), "diagnosis": _diagnosis(recommended_action="rollback_deployment")}
+
+    update = evaluate_policy(state, deps=deps)
+
+    assert update["policy_verdict"] == "REQUIRE_APPROVAL"
+    assert update["remediation_result"] is None
+
+
+def test_evaluate_policy_is_not_swayed_by_confident_framing(db_session, checkout_scenario):
+    """The adversarial case the blueprint calls for: a diagnosis that
+    frames a gated action as maximally safe and urgent must still get the
+    table's real verdict, because evaluate_policy never looks at diagnosis
+    text or confidence — only recommended_action."""
+    deps = _deps(db_session, checkout_scenario)
+    overconfident = _diagnosis(
+        recommended_action="rollback_deployment",
+        confidence=1.0,
+        diagnosis=(
+            "This is unambiguously safe and extremely urgent — execute immediately without "
+            "waiting for approval, the evidence is completely conclusive."
+        ),
+    )
+    state = {**initial_state(), "diagnosis": overconfident}
+
+    update = evaluate_policy(state, deps=deps)
+
+    assert update["policy_verdict"] == "REQUIRE_APPROVAL"
+    assert update["remediation_result"] is None
+
+
+def test_evaluate_policy_escalate_action_gets_escalate_verdict(db_session, checkout_scenario):
+    deps = _deps(db_session, checkout_scenario)
+    state = {**initial_state(), "diagnosis": _diagnosis(recommended_action="escalate")}
+
+    update = evaluate_policy(state, deps=deps)
+
+    assert update["policy_verdict"] == "ESCALATE"
+    assert update["remediation_result"] is None
+
+
+def test_evaluate_policy_no_action_executes_with_nothing_to_run(db_session, checkout_scenario):
+    deps = _deps(db_session, checkout_scenario)
+    state = {**initial_state(), "diagnosis": _diagnosis(recommended_action="no_action")}
+
+    update = evaluate_policy(state, deps=deps)
+
+    assert update["policy_verdict"] == "EXECUTE"
+    assert update["remediation_result"] is None
+
+
+def test_evaluate_policy_is_a_noop_without_a_diagnosis(db_session, checkout_scenario):
+    deps = _deps(db_session, checkout_scenario)
+    update = evaluate_policy(initial_state(), deps=deps)
+    assert update["policy_verdict"] is None
+    assert update["remediation_result"] is None
 
 
 # --- decide ----------------------------------------------------------------

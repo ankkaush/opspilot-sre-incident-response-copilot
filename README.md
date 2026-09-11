@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.2 Phase 1 — LangGraph Migration. v0.1 (raw loop, tools, incident API, dashboard) is complete and frozen; v0.2 replaces the control flow with an explicit state machine.
+**Status:** v0.2 Phase 2 — Deterministic Policy Engine. v0.1 is complete and frozen; v0.2 Phase 1 replaced the control flow with a LangGraph state machine, and this phase adds the actual enforcement gate.
 
 ## What exists right now
 
@@ -35,18 +35,35 @@ into this repo).
   until the model calls `submit_diagnosis` or a deterministic ceiling is
   hit — the same control flow v0.1's while-loop had, now expressed as named,
   independently-callable, independently-testable graph nodes instead of
-  lines inside one function. Two new nodes reached once a diagnosis exists:
+  lines inside one function. Two nodes reached once a diagnosis exists:
   `hypothesize` deterministically checks whether the diagnosis's cited
   evidence was actually gathered (a hallucination guard, not a semantic
-  check), and `classify_risk` previews the risk-tier table the real v0.2
-  Phase 2 policy engine will formalize and actually enforce — informational
-  only for now, since there's nothing to gate until remediation tools exist.
+  check), and `classify_risk` computes an informational risk-tier preview.
   Same max-steps and max-cost-per-run ceilings as v0.1, still enforced by
   code, never left to the model's own judgment.
+- **The deterministic policy engine** (`opspilot.agent.policy`) — the real
+  gate: `evaluate(ProposedAction) -> EXECUTE | REQUIRE_APPROVAL | BLOCK |
+  ESCALATE`, keyed *only* on `action_type`, never on diagnosis text or
+  confidence. An unrecognized action type fails closed (`BLOCK`), not open.
+  Reached by a new `evaluate_policy` graph node between `classify_risk` and
+  `decide`. Proven adversarially: a diagnosis engineered to sound maximally
+  confident and urgent about a gated action still gets `REQUIRE_APPROVAL`
+  (`tests/test_agent_nodes.py::test_evaluate_policy_is_not_swayed_by_confident_framing`).
+- **Simulated remediation tools** (`opspilot.agent.remediation_tools`):
+  `rollback_deployment`, `restart_service`, `scale_service`,
+  `toggle_feature_flag` — schema-validated and parameterized, never a
+  free-text or shell action. Deliberately **not** exposed to the model as
+  callable tools during `gather_context` — the read-only tool set stays
+  read-only, exactly as in v0.1. Only `evaluate_policy` ever calls one of
+  these, and only after a verdict of `EXECUTE`. Today that's just
+  `restart_service`/`scale_service` (the two `EXECUTE`-tier actions with no
+  extra parameters to collect) — `rollback_deployment` and
+  `toggle_feature_flag` are gated `REQUIRE_APPROVAL` and never auto-execute.
 
-There is **no remediation and no policy engine yet** — every tool is still a
-pure read, and there's nothing for a policy engine to gate. That's v0.2
-Phase 2. There is also no human-in-the-loop, memory, tracing, or eval yet.
+There is **no human-in-the-loop yet** — a `REQUIRE_APPROVAL` verdict
+currently just... doesn't execute. Turning that into an actual pause/resume
+with an approval API is v0.2 Phase 3. There is also no memory, tracing, or
+eval yet.
 
 - **A real Incident API** (`opspilot.routers.incidents`): create an Incident
   against a seeded Scenario, run it (calls the agent loop and persists every
@@ -203,7 +220,10 @@ src/opspilot/
   agent/client.py      Provider-agnostic model call abstraction + retries
   agent/support.py     Shared prompt/serialization helpers (nodes + loop)
   agent/state.py       GraphState schema, NodeDeps, initial_state()
-  agent/nodes.py       gather_context, hypothesize, classify_risk, decide
+  agent/policy.py      The deterministic policy engine (evaluate())
+  agent/remediation_tools.py  Simulated, parameterized remediation actions
+  agent/nodes.py       gather_context, hypothesize, classify_risk,
+                       evaluate_policy, decide
   agent/graph.py       Builds the LangGraph state machine, runs it
   agent/loop.py        Public investigate() entrypoint (delegates to graph.py)
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
@@ -212,6 +232,7 @@ alembic/               Migrations
 tests/                 Auth, migration round-trip, seed determinism,
                        tool unit tests, node-level unit tests, full-graph
                        integration tests, end-to-end incident tests
-                       (create/run/timeline, rate limiting, body size limits)
+                       (create/run/timeline, rate limiting, body size limits),
+                       policy engine tests, remediation tool tests
 web/                   Minimal Next.js dashboard (incident list + timeline)
 ```

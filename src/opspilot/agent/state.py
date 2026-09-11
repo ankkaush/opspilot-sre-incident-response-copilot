@@ -18,6 +18,7 @@ from typing import Annotated, TypedDict
 from sqlalchemy.orm import Session
 
 from opspilot.agent.client import ChatFn
+from opspilot.agent.policy import PolicyVerdict
 from opspilot.agent.schemas import SubmitDiagnosisArgs, ToolCallRecord
 from opspilot.models import Scenario
 
@@ -31,6 +32,8 @@ class GraphState(TypedDict):
     evidence_grounded: bool | None
     ungrounded_evidence: list[str]
     risk_tier: str | None
+    policy_verdict: PolicyVerdict | None
+    remediation_result: dict | None
     status: str | None
 
 
@@ -44,6 +47,8 @@ def initial_state() -> GraphState:
         evidence_grounded=None,
         ungrounded_evidence=[],
         risk_tier=None,
+        policy_verdict=None,
+        remediation_result=None,
         status=None,
     )
 

@@ -1,4 +1,4 @@
-"""The graph's four nodes, plus the routing function that decides whether
+"""The graph's nodes, plus the routing function that decides whether
 `gather_context` loops back on itself or the investigation moves on.
 
 Each node is a plain function of `(state, deps)` returning a partial state
@@ -15,6 +15,15 @@ import re
 from pydantic import ValidationError
 
 from opspilot.agent.client import call_with_retries, estimate_cost_usd
+from opspilot.agent.policy import ProposedAction
+from opspilot.agent.policy import evaluate as evaluate_policy_verdict
+from opspilot.agent.remediation_tools import (
+    RemediationContext,
+    RestartServiceArgs,
+    ScaleServiceArgs,
+    restart_service,
+    scale_service,
+)
 from opspilot.agent.schemas import SubmitDiagnosisArgs, ToolCallRecord
 from opspilot.agent.state import GraphState, NodeDeps
 from opspilot.agent.support import (
@@ -28,12 +37,24 @@ from opspilot.config import get_settings
 
 log = logging.getLogger("opspilot.agent")
 
+# Action types that can auto-execute (policy verdict EXECUTE) *and* have a
+# real remediation tool to run. "no_action" is EXECUTE-verdict too but has
+# nothing to call. rollback_deployment/toggle_feature_flag never reach here
+# with EXECUTE in the current risk table, so they don't need an entry —
+# when they do need real parameters (a target version, a flag name), that's
+# v0.2 Phase 3's job, once the diagnosis pipeline can actually collect them
+# through a human approval step rather than guessing.
+_AUTO_EXECUTABLE = {
+    "restart_service": lambda ctx: restart_service(ctx, RestartServiceArgs()),
+    "scale_service": lambda ctx: scale_service(ctx, ScaleServiceArgs()),
+}
+
 _TOOLS = [*anthropic_tool_definitions(), SUBMIT_DIAGNOSIS_TOOL]
 
-# Preview of the risk classification the v0.2 Phase 2 policy engine will
-# formalize and actually enforce. This node's output is informational only
-# in Phase 1 — nothing here gates anything yet, because nothing here can be
-# executed yet (remediation tools don't exist until Phase 2).
+# classify_risk's own preview table — informational only, superseded as the
+# actual gate by opspilot.agent.policy (see evaluate_policy below). Kept
+# distinct rather than merged: this one is a plain risk *tier* for display,
+# the policy module returns an enforceable *verdict*.
 _RISK_TABLE = {
     "no_action": "none",
     "escalate": "none",
@@ -192,6 +213,34 @@ def classify_risk(state: GraphState, *, deps: NodeDeps) -> dict:
     if diagnosis is None:
         return {"risk_tier": None}
     return {"risk_tier": _RISK_TABLE.get(diagnosis.recommended_action, "unknown")}
+
+
+def evaluate_policy(state: GraphState, *, deps: NodeDeps) -> dict:
+    """The real gate — `classify_risk` above is a preview; this is the
+    module (opspilot.agent.policy) that actually decides, keyed only on
+    `recommended_action`, never on the diagnosis text or its confidence.
+    A REQUIRE_APPROVAL or BLOCK verdict executes nothing here — that's
+    correct for this phase; the approval flow that could later turn a
+    REQUIRE_APPROVAL into an execution is v0.2 Phase 3."""
+    diagnosis = state["diagnosis"]
+    if diagnosis is None:
+        return {"policy_verdict": None, "remediation_result": None}
+
+    action = ProposedAction(
+        action_type=diagnosis.recommended_action, target=deps.scenario.service.name, params={}
+    )
+    verdict = evaluate_policy_verdict(action)
+
+    remediation_result = None
+    if verdict == "EXECUTE":
+        executor = _AUTO_EXECUTABLE.get(diagnosis.recommended_action)
+        if executor is not None:
+            ctx = RemediationContext(session=deps.session, scenario=deps.scenario)
+            remediation_result = executor(ctx)
+        # "no_action" also verdicts EXECUTE but has no executor — nothing to
+        # run, and remediation_result correctly stays None.
+
+    return {"policy_verdict": verdict, "remediation_result": remediation_result}
 
 
 def decide(state: GraphState, *, deps: NodeDeps) -> dict:

@@ -24,6 +24,7 @@ from opspilot.agent.client import ChatFn
 from opspilot.agent.nodes import (
     classify_risk,
     decide,
+    evaluate_policy,
     gather_context,
     hypothesize,
     route_after_gather_context,
@@ -40,6 +41,7 @@ def build_graph(deps: NodeDeps):
     graph.add_node("gather_context", partial(gather_context, deps=deps))
     graph.add_node("hypothesize", partial(hypothesize, deps=deps))
     graph.add_node("classify_risk", partial(classify_risk, deps=deps))
+    graph.add_node("evaluate_policy", partial(evaluate_policy, deps=deps))
     graph.add_node("decide", partial(decide, deps=deps))
 
     graph.add_edge(START, "gather_context")
@@ -49,7 +51,8 @@ def build_graph(deps: NodeDeps):
         {"continue": "gather_context", "diagnosed": "hypothesize", "ceiling": "decide"},
     )
     graph.add_edge("hypothesize", "classify_risk")
-    graph.add_edge("classify_risk", "decide")
+    graph.add_edge("classify_risk", "evaluate_policy")
+    graph.add_edge("evaluate_policy", "decide")
     graph.add_edge("decide", END)
 
     return graph.compile()
@@ -95,4 +98,6 @@ def run_investigation(
         evidence_grounded=final_state["evidence_grounded"],
         ungrounded_evidence=final_state["ungrounded_evidence"],
         risk_tier=final_state["risk_tier"],
+        policy_verdict=final_state["policy_verdict"],
+        remediation_result=final_state["remediation_result"],
     )

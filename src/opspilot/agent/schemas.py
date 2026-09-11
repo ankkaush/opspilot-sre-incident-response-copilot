@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from opspilot.agent.policy import PolicyVerdict
+
 # The recommended-action vocabulary intentionally matches what the seed
 # scenarios' ground_truth.expected_action already uses (opspilot.seed.scenarios)
 # — that's what makes a later eval comparison (v0.3) a straight equality check.
@@ -71,3 +73,10 @@ class InvestigationResult(BaseModel):
     evidence_grounded: bool | None = None
     ungrounded_evidence: list[str] = Field(default_factory=list)
     risk_tier: str | None = None
+
+    # Set by evaluate_policy (v0.2 Phase 2) — the actual gate, keyed only on
+    # recommended_action, never on diagnosis text or confidence. None when
+    # no diagnosis was reached. remediation_result is only ever populated
+    # when policy_verdict is EXECUTE and there was something to run.
+    policy_verdict: PolicyVerdict | None = None
+    remediation_result: dict | None = None

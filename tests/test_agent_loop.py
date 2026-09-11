@@ -43,6 +43,10 @@ def test_happy_path_produces_grounded_diagnosis(db_session, checkout_scenario):
     assert result.evidence_grounded is True
     assert result.ungrounded_evidence == []
     assert result.risk_tier == "medium"
+    # New in v0.2 Phase 2 — the real policy gate: rollback is REQUIRE_APPROVAL,
+    # so nothing actually executed even though the diagnosis is confident.
+    assert result.policy_verdict == "REQUIRE_APPROVAL"
+    assert result.remediation_result is None
 
 
 def test_full_graph_diagnoses_the_payments_scenario_as_escalate(db_session, payments_scenario):
@@ -70,6 +74,37 @@ def test_full_graph_diagnoses_the_payments_scenario_as_escalate(db_session, paym
     assert result.diagnosis.recommended_action == "escalate"
     assert result.risk_tier == "none"
     assert result.evidence_grounded is True
+    assert result.policy_verdict == "ESCALATE"
+    assert result.remediation_result is None
+
+
+def test_full_graph_auto_executes_a_low_risk_recommended_action(db_session, checkout_scenario):
+    """Not a ground-truth-accurate diagnosis for this scenario — just proves
+    the EXECUTE path runs end to end through the whole graph, including an
+    actual (simulated) remediation tool call, when the policy table allows
+    it without a human."""
+    scripted = ScriptedChatFn(
+        responses=[
+            tool_use_response(
+                "t1",
+                "submit_diagnosis",
+                {
+                    "diagnosis": "checkout-api is in a bad in-memory state; a restart should clear it.",
+                    "evidence": ["logs:connection pool exhausted"],
+                    "confidence": 0.6,
+                    "recommended_action": "restart_service",
+                },
+            )
+        ]
+    )
+
+    result = investigate(db_session, checkout_scenario, chat_fn=scripted, max_steps=8, max_cost_usd=1.0)
+
+    assert result.status == "diagnosed"
+    assert result.policy_verdict == "EXECUTE"
+    assert result.remediation_result is not None
+    assert result.remediation_result["action"] == "restart_service"
+    assert result.remediation_result["simulated"] is True
 
 
 def test_malformed_tool_arguments_are_rejected_without_crashing(db_session, checkout_scenario):
