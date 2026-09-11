@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     log_level: str = "info"
     env: str = "dev"
 
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-5"
+    agent_max_steps: int = 8
+    agent_max_cost_usd: float = 0.20
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

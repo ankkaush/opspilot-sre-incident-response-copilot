@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from opspilot.db import SessionLocal
 from opspilot.main import app
+from opspilot.models import Scenario
 from opspilot.seed.generator import seed_all
 
 
@@ -31,3 +32,22 @@ def client() -> TestClient:
 @pytest.fixture
 def auth_headers() -> dict:
     return {"X-API-Key": os.environ["API_KEY"]}
+
+
+@pytest.fixture
+def db_session():
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def checkout_scenario(db_session) -> Scenario:
+    return db_session.query(Scenario).filter_by(key="checkout-deploy-outage").one()
+
+
+@pytest.fixture
+def payments_scenario(db_session) -> Scenario:
+    return db_session.query(Scenario).filter_by(key="payments-db-latency").one()
