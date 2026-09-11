@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from opspilot.agent.client import (
     AnthropicChatClient,
     ChatFn,
+    ModelResponse,
     call_with_retries,
     estimate_cost_usd,
 )
@@ -92,6 +93,27 @@ def _default_chat_fn() -> ChatFn:
             "(tests do this to avoid calling the real API)."
         )
     return AnthropicChatClient(api_key=settings.anthropic_api_key, model=settings.anthropic_model)
+
+
+def get_chat_fn() -> ChatFn:
+    """FastAPI-dependency-shaped wrapper around the default chat function.
+
+    Exists so routers/incidents.py can `Depends(get_chat_fn)` and tests can
+    override it via `app.dependency_overrides[get_chat_fn] = ...` — the real
+    Anthropic client is never constructed in a test process.
+
+    Deliberately lazy: FastAPI resolves every Depends() *before* the route
+    body runs, so a naive `return _default_chat_fn()` here would try to
+    build a real Anthropic client (and raise if ANTHROPIC_API_KEY is unset)
+    even for a request that's about to 404 on a nonexistent incident and
+    never actually call the model. The real client is only constructed the
+    first time this wrapper is actually invoked.
+    """
+
+    def _lazy_chat_fn(*, messages: list[dict], tools: list[dict], system: str) -> ModelResponse:
+        return _default_chat_fn()(messages=messages, tools=tools, system=system)
+
+    return _lazy_chat_fn
 
 
 def investigate(

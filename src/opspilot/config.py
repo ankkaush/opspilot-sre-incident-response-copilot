@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     agent_max_steps: int = 8
     agent_max_cost_usd: float = 0.20
 
+    rate_limit_max_requests: int = 100
+    rate_limit_window_seconds: int = 60
+    max_request_body_bytes: int = 64 * 1024
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

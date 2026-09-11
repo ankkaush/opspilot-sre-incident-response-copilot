@@ -6,8 +6,10 @@ from alembic import context
 from opspilot.config import get_settings
 from opspilot.db import Base
 from opspilot.models import (  # noqa: F401 — import registers tables on Base.metadata
+    AuditLogEntry,
     DependencyStatus,
     Deployment,
+    Incident,
     LogEntry,
     MetricPoint,
     Runbook,

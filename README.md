@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.1 Phase 2 — Tool Layer & the Raw Agent Loop.
+**Status:** v0.1 Phase 3 — Incident API, Audit Trail & Minimal Dashboard. v0.1 is now feature-complete.
 
 ## What exists right now
 
@@ -37,15 +37,39 @@ into this repo).
   enforced by code, never left to the model's own judgment.
 
 There is **no remediation and no policy engine yet** — every tool is a pure
-read. That's v0.2, once the policy layer exists to gate state-changing
-actions. There is also no persisted incident/audit trail yet — that's v0.1
-Phase 3.
+read, and there's nothing for a policy engine to gate. That's v0.2. There is
+also no LangGraph, memory, tracing, or eval yet — those are v0.2 onward.
+
+- **A real Incident API** (`opspilot.routers.incidents`): create an Incident
+  against a seeded Scenario, run it (calls the agent loop and persists every
+  tool call as an append-only audit-log row), fetch it, list all of them, or
+  fetch its timeline. Re-running an already-run Incident is refused (409) —
+  a deterministic rule, not a suggestion, matching the same "code decides"
+  principle as everything else here.
+- **An append-only audit trail**: every tool call the agent makes during a
+  run — including a rejected/invalid one — becomes its own `AuditLogEntry`
+  row, in order, linked to the Incident. Nothing here is ever updated or
+  deleted.
+- **Security**: per-API-key rate limiting (in-memory, single-process — see
+  the comment in `auth.py` for why that's the right amount of complexity
+  here) and a request-body-size limit, both new Phase 3 requirements, plus
+  input validation on incident creation (scenario key pattern + existence
+  check).
+- **A minimal dashboard** (`web/`, Next.js App Router): an incident list
+  with a "create & run" form, and an incident detail page rendering the
+  actual timeline — *incident started → evidence gathered (one entry per
+  tool call) → diagnosis formed → final status* — with the diagnosis and
+  cited evidence up top. No charts, no analytics; it's a real, honest record
+  of what the agent did, which is the whole Phase 3 dashboard requirement.
+  The API key is read only in server components/actions and never reaches
+  the browser bundle — see `web/lib/api.ts`.
 
 ## Running an investigation
 
-Requires an `ANTHROPIC_API_KEY` in `.env` (not needed for Phase 1's
+Requires an `ANTHROPIC_API_KEY` in `.env` (not needed for Phase 1/2's
 inspection endpoints or for the test suite, which scripts a fake model
-client and never calls the real API):
+client and never calls the real API). The dashboard is the normal way to do
+this now; direct Python is still useful for scripting or debugging:
 
 ```python
 from opspilot.db import SessionLocal
@@ -65,7 +89,7 @@ print(result.estimated_cost_usd)
 ## Running it
 
 ```bash
-cp .env.example .env   # edit API_KEY to something real
+cp .env.example .env   # edit API_KEY and ANTHROPIC_API_KEY
 docker compose up --build
 ```
 
@@ -75,7 +99,24 @@ to restart), and starts the API on `http://localhost:8000`.
 ```bash
 curl http://localhost:8000/health
 curl -H "X-API-Key: <your API_KEY>" http://localhost:8000/api/v1/scenarios
-curl -H "X-API-Key: <your API_KEY>" http://localhost:8000/api/v1/scenarios/checkout-deploy-outage
+
+curl -X POST -H "X-API-Key: <your API_KEY>" -H "Content-Type: application/json" \
+  -d '{"scenario_key": "checkout-deploy-outage"}' \
+  http://localhost:8000/api/v1/incidents
+
+curl -X POST -H "X-API-Key: <your API_KEY>" \
+  http://localhost:8000/api/v1/incidents/1/run
+
+curl -H "X-API-Key: <your API_KEY>" http://localhost:8000/api/v1/incidents/1/timeline
+```
+
+To run the dashboard against it:
+
+```bash
+cd web
+cp .env.example .env.local   # OPSPILOT_API_KEY must match the backend's API_KEY
+npm install
+npm run dev
 ```
 
 ## Local development (without Docker)
@@ -127,6 +168,9 @@ This repository is public. The rules that keeps it safe to be public:
   never reused anywhere real.
 - CI runs [gitleaks](https://github.com/gitleaks/gitleaks) on every push and
   PR to catch anything that looks like a committed secret before it lands.
+- The dashboard (`web/`) reads its API key server-side only
+  (`OPSPILOT_API_KEY`, deliberately not `NEXT_PUBLIC_`-prefixed) — it never
+  reaches the browser bundle. See `web/lib/api.ts`.
 - When a new phase introduces a new external service or API, `.env.example`
   gets a new placeholder entry in the same commit — never the real value.
 
@@ -151,7 +195,11 @@ src/opspilot/
   agent/client.py      Provider-agnostic model call abstraction + retries
   agent/loop.py        The raw agent loop (no framework)
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
+  routers/incidents.py Incident CRUD, run endpoint, timeline endpoint
 alembic/               Migrations
 tests/                 Auth, migration round-trip, seed determinism,
-                       tool unit tests, scripted agent-loop tests
+                       tool unit tests, scripted agent-loop tests,
+                       end-to-end incident tests (create/run/timeline,
+                       rate limiting, request size limits)
+web/                   Minimal Next.js dashboard (incident list + timeline)
 ```

@@ -21,6 +21,8 @@ EXPECTED_TABLES = {
     "log_entries",
     "dependency_statuses",
     "runbooks",
+    "incidents",
+    "audit_log_entries",
 }
 
 

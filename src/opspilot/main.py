@@ -3,10 +3,11 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from opspilot.config import get_settings
 from opspilot.logging_config import configure_logging
-from opspilot.routers import inspect
+from opspilot.routers import incidents, inspect
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -22,7 +23,31 @@ app.add_middleware(
     allow_headers=["X-API-Key", "Content-Type"],
 )
 
+
+class MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """Reject oversized request bodies by their declared Content-Length,
+    before FastAPI ever parses them. A cheap, deterministic guard against a
+    client sending an absurdly large payload at a small JSON API."""
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError:
+                declared_size = None
+            if declared_size is not None and declared_size > settings.max_request_body_bytes:
+                return JSONResponse(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    content={"detail": "Request body too large."},
+                )
+        return await call_next(request)
+
+
+app.add_middleware(MaxBodySizeMiddleware)
+
 app.include_router(inspect.router)
+app.include_router(incidents.router)
 
 
 @app.exception_handler(Exception)

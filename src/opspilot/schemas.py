@@ -1,6 +1,7 @@
 import datetime as dt
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ServiceOut(BaseModel):
@@ -44,3 +45,41 @@ class ScenarioDetail(BaseModel):
     metric_point_count: int
     log_entry_count: int
     dependency_status_count: int
+
+
+class IncidentCreate(BaseModel):
+    scenario_key: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9-]+$",
+        description="Key of a seeded scenario to investigate, e.g. 'checkout-deploy-outage'.",
+    )
+
+
+class IncidentSummary(BaseModel):
+    id: int
+    scenario_key: str
+    service_name: str
+    status: str
+    created_at: dt.datetime
+    steps_used: int | None
+    estimated_cost_usd: float | None
+
+
+class IncidentDetail(IncidentSummary):
+    diagnosis: dict | None
+    started_at: dt.datetime | None
+    completed_at: dt.datetime | None
+
+
+class TimelineEntry(BaseModel):
+    kind: Literal["incident_started", "evidence_gathered", "diagnosis_formed", "final_status"]
+    step: int | None
+    label: str
+    detail: dict | None
+    timestamp: dt.datetime | None
+
+
+class TimelineResponse(BaseModel):
+    incident_id: int
+    entries: list[TimelineEntry]

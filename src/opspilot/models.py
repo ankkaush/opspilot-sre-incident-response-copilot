@@ -120,3 +120,51 @@ class Runbook(Base):
     content: Mapped[str] = mapped_column(Text)
 
     service: Mapped["Service"] = relationship(back_populates="runbooks")
+
+
+class Incident(Base):
+    """One real, user-created investigation run against a seeded scenario.
+
+    A Scenario is the reusable, deterministic *fixture*; an Incident is one
+    attempt at investigating it — created by a human, run through the agent
+    loop, and left with a permanent record. Re-running is deliberately not
+    supported (see routers/incidents.py) — an Incident is a single, honest
+    attempt, not a scratchpad.
+    """
+
+    __tablename__ = "incidents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scenario_id: Mapped[int] = mapped_column(ForeignKey("scenarios.id"), index=True)
+    # open -> running -> diagnosed | incomplete_step_ceiling | incomplete_cost_ceiling
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    diagnosis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    steps_used: Mapped[int | None] = mapped_column(nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    scenario: Mapped["Scenario"] = relationship()
+    audit_entries: Mapped[list["AuditLogEntry"]] = relationship(
+        back_populates="incident", order_by="AuditLogEntry.id"
+    )
+
+
+class AuditLogEntry(Base):
+    """Append-only: one row per tool call (including submit_diagnosis) made
+    during an Incident's investigation. Nothing ever updates or deletes a
+    row here — this table is the audit trail, not application state."""
+
+    __tablename__ = "audit_log_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), index=True)
+    step: Mapped[int]
+    tool_name: Mapped[str] = mapped_column(String(64))
+    arguments: Mapped[dict] = mapped_column(JSONB)
+    result: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+
+    incident: Mapped["Incident"] = relationship(back_populates="audit_entries")
