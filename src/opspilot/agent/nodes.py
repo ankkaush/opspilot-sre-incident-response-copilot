@@ -108,6 +108,8 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
     cost = state["estimated_cost_usd"] + estimate_cost_usd(
         settings.anthropic_model, response.input_tokens, response.output_tokens
     )
+    input_tokens = state["total_input_tokens"] + response.input_tokens
+    output_tokens = state["total_output_tokens"] + response.output_tokens
 
     new_messages: list[dict] = [
         {"role": "assistant", "content": content_blocks_to_dicts(response.content)}
@@ -126,6 +128,8 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
             "messages": new_messages,
             "steps_used": step,
             "estimated_cost_usd": cost,
+            "total_input_tokens": input_tokens,
+            "total_output_tokens": output_tokens,
         }
 
     tool_results: list[dict] = []
@@ -189,6 +193,8 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
         "evidence_trail": new_evidence,
         "steps_used": step,
         "estimated_cost_usd": cost,
+        "total_input_tokens": input_tokens,
+        "total_output_tokens": output_tokens,
         "diagnosis": diagnosis,
     }
 

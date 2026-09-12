@@ -28,6 +28,8 @@ class GraphState(TypedDict):
     evidence_trail: Annotated[list[ToolCallRecord], operator.add]
     steps_used: int
     estimated_cost_usd: float
+    total_input_tokens: int
+    total_output_tokens: int
     diagnosis: SubmitDiagnosisArgs | None
     evidence_grounded: bool | None
     ungrounded_evidence: list[str]
@@ -51,6 +53,8 @@ def initial_state() -> GraphState:
         evidence_trail=[],
         steps_used=0,
         estimated_cost_usd=0.0,
+        total_input_tokens=0,
+        total_output_tokens=0,
         diagnosis=None,
         evidence_grounded=None,
         ungrounded_evidence=[],

@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.3 Phase 1 — Golden Scenario Dataset. v0.1 and v0.2 (raw loop → LangGraph → policy engine → human-in-the-loop) are complete and frozen; v0.3 is the measurable-agent track, starting with the dataset the eval harness (Phase 2) will run against.
+**Status:** v0.3 Phase 2 — Evaluation Harness. v0.1 and v0.2 are complete and frozen; v0.3 Phase 1 built the 17-scenario golden dataset, and this phase is what actually runs the agent against it and scores the result.
 
 ## What exists right now
 
@@ -34,7 +34,27 @@ into this repo).
   one action (`delete_data`) the policy engine must always `BLOCK` — added
   specifically because nothing in the existing action vocabulary could
   reach that verdict before this phase (see `opspilot.agent.policy`).
-  Nothing scores against this dataset yet — that's v0.3 Phase 2.
+- **The evaluation harness** (`opspilot.eval`) — runs every scenario through
+  the exact same `investigate()` entrypoint the real Incident API uses (no
+  eval-mode bypass of the policy engine) and scores each run two ways:
+  - **Deterministic** (`opspilot.eval.deterministic`, no model call): did
+    the policy verdict match ground truth, did the recommended action match
+    exactly, which fraction of the expected tool categories actually got
+    called, how many tool calls were unnecessary or errored, steps, cost,
+    tokens, latency.
+  - **LLM-as-judge** (`opspilot.eval.judge`, one structured-output model
+    call per scenario): diagnosis accuracy, evidence groundedness (the
+    RAGAS-style faithfulness idea, borrowed as a rubric rather than
+    imported as a dependency), remediation quality, and escalation
+    correctness — four independent scores, never blended into one number.
+
+  `opspilot.eval.regression` compares two saved runs and flags any metric
+  that moved past a threshold — the "did this prompt change make things
+  worse" check, proven reproducibly in `tests/test_eval_regression.py`
+  with synthetic before/after runs rather than relying on live model
+  variance between two paid runs. Results save as JSON under `eval_runs/`
+  (gitignored — regenerable output, not a source artifact). Run it with
+  `python -m opspilot.eval` (see below).
 - Read-only inspection endpoints (`/api/v1/services`, `/api/v1/scenarios`,
   `/api/v1/scenarios/{key}`) so the seeded data is verifiable over HTTP
 - Structured JSON logging, Docker Compose, GitHub Actions CI
@@ -136,6 +156,22 @@ print(result.diagnosis)           # SubmitDiagnosisArgs(...)
 print(result.evidence_trail)      # every tool call made, in order
 print(result.estimated_cost_usd)
 ```
+
+## Running the eval harness
+
+Also requires `ANTHROPIC_API_KEY`. Scope which scenarios run with
+`--scenarios` to control cost — a full 17-scenario run with judging costs
+roughly the same order of magnitude as two dozen ordinary investigations
+(a 3-scenario smoke test with judging cost about $0.03 in testing):
+
+```bash
+python -m opspilot.eval --scenarios checkout-deploy-outage,payments-db-latency --label baseline
+python -m opspilot.eval --scenarios checkout-deploy-outage,payments-db-latency --label candidate --compare-to baseline
+python -m opspilot.eval --no-judge   # deterministic checks only, still real agent calls
+```
+
+Prints a scorecard, saves the full result to `eval_runs/<label>.json`, and
+— with `--compare-to` — a regression report against a previously saved run.
 
 ## Running it
 
@@ -259,6 +295,16 @@ src/opspilot/
   agent/loop.py        Public investigate() entrypoint (delegates to graph.py)
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
+  eval/deterministic.py Code-only scoring: policy/action match, tool
+                       selection, errors, cost, tokens, latency
+  eval/judge.py        LLM-as-judge: diagnosis accuracy, evidence
+                       groundedness, remediation quality, escalation
+  eval/runner.py       Runs the golden dataset through investigate(),
+                       scores each run, aggregates
+  eval/regression.py   Flags metrics that regressed between two saved runs
+  eval/scorecard.py    Human-readable scorecard rendering
+  eval/storage.py      Saves/loads EvalRuns as JSON
+  eval/__main__.py     CLI: python -m opspilot.eval
 alembic/               Migrations
 tests/                 Auth, migration round-trip, seed determinism +
                        golden-dataset coverage checks (verdict coverage,
@@ -268,7 +314,10 @@ tests/                 Auth, migration round-trip, seed determinism +
                        provider-failure injection, and the BLOCK path),
                        end-to-end incident tests (create/run/approve,
                        rate limiting, body size limits, SLA timeout),
-                       policy engine tests, remediation tool tests
+                       policy engine tests, remediation tool tests, eval
+                       harness tests (deterministic scoring, judge parsing,
+                       full runner, regression detection, storage)
 web/                   Next.js dashboard (incident list, pending-approvals
                        queue, graph-state view, approval form, timeline)
+eval_runs/             Eval results (gitignored — regenerable output)
 ```

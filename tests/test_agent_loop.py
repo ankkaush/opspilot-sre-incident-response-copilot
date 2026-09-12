@@ -193,6 +193,10 @@ def test_full_graph_auto_executes_a_low_risk_recommended_action(db_session, chec
     assert result.remediation_result is not None
     assert result.remediation_result["action"] == "restart_service"
     assert result.remediation_result["simulated"] is True
+    # New in v0.3 Phase 2 — token totals feed the eval harness's cost/token
+    # metrics: one tool_use_response call, default 100 in / 50 out tokens.
+    assert result.total_input_tokens == 100
+    assert result.total_output_tokens == 50
 
 
 def test_full_graph_blocks_delete_data_and_never_pauses_or_executes(db_session, checkout_scenario):

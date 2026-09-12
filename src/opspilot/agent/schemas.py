@@ -75,6 +75,8 @@ class InvestigationResult(BaseModel):
     evidence_trail: list[ToolCallRecord] = Field(default_factory=list)
     steps_used: int
     estimated_cost_usd: float
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
 
     # Set by the graph's hypothesize/classify_risk nodes (v0.2 Phase 1) —
     # None when the investigation never reached a diagnosis, since neither
