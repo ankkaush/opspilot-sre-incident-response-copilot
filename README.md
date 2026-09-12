@@ -11,18 +11,30 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.2 Phase 3 — Human-in-the-Loop, Interrupts & Recovery. v0.1 is complete and frozen; v0.2 Phase 1 replaced the control flow with a LangGraph state machine, Phase 2 added the deterministic policy gate, and this phase turns a `REQUIRE_APPROVAL` verdict into a real pause/resume instead of a dead end.
+**Status:** v0.3 Phase 1 — Golden Scenario Dataset. v0.1 and v0.2 (raw loop → LangGraph → policy engine → human-in-the-loop) are complete and frozen; v0.3 is the measurable-agent track, starting with the dataset the eval harness (Phase 2) will run against.
 
 ## What exists right now
 
 - FastAPI app with real API-key authentication on every route except `/health`
 - PostgreSQL schema (via Alembic) for the synthetic environment: services,
   scenarios, deployments, metrics, logs, dependency statuses, runbooks
-- A deterministic seed generator — two hand-built incident scenarios, each
-  carrying a structured **ground-truth block** (injected cause, expected
-  evidence, expected diagnosis, expected action, expected policy verdict).
-  Nothing scores against this yet (that's v0.3) — it's defined now because
-  writing it after the fact, once more scenarios exist, is expensive.
+- **A 17-scenario golden dataset** (`opspilot.seed.scenarios`), the deterministic
+  seed generator's full payload as of v0.3 Phase 1 — each scenario carrying a
+  structured **ground-truth block** (injected cause, expected evidence,
+  expected diagnosis, expected action, expected policy verdict), reviewable
+  by a human without ever running the agent. Covers every policy verdict at
+  least once (`EXECUTE`, `REQUIRE_APPROVAL`, `BLOCK`, `ESCALATE`) across
+  three services (checkout-api, payments-api, inventory-api):
+  deployment-caused and non-deployment-caused incidents with the same
+  surface symptom, dependency failures, resource exhaustion (CPU, memory,
+  and a stuck-process variant that looks like resource exhaustion but
+  isn't), deliberately misleading correlations (a coincidentally-timed but
+  unrelated deploy; a feature-flag rollout that looks like a capacity
+  issue), incomplete/ambiguous evidence, an already-self-resolved blip, and
+  one action (`delete_data`) the policy engine must always `BLOCK` — added
+  specifically because nothing in the existing action vocabulary could
+  reach that verdict before this phase (see `opspilot.agent.policy`).
+  Nothing scores against this dataset yet — that's v0.3 Phase 2.
 - Read-only inspection endpoints (`/api/v1/services`, `/api/v1/scenarios`,
   `/api/v1/scenarios/{key}`) so the seeded data is verifiable over HTTP
 - Structured JSON logging, Docker Compose, GitHub Actions CI
@@ -132,8 +144,8 @@ cp .env.example .env   # edit API_KEY and ANTHROPIC_API_KEY
 docker compose up --build
 ```
 
-This runs migrations, seeds the two synthetic scenarios (idempotently — safe
-to restart), and starts the API on `http://localhost:8000`.
+This runs migrations, seeds the 17 golden scenarios (idempotently — safe to
+restart), and starts the API on `http://localhost:8000`.
 
 ```bash
 curl http://localhost:8000/health
@@ -248,10 +260,12 @@ src/opspilot/
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
 alembic/               Migrations
-tests/                 Auth, migration round-trip, seed determinism,
-                       tool unit tests, node-level unit tests, full-graph
-                       integration tests (including the full HITL
-                       pause/resume flow and provider-failure injection),
+tests/                 Auth, migration round-trip, seed determinism +
+                       golden-dataset coverage checks (verdict coverage,
+                       reviewable ground truth, dataset size), tool unit
+                       tests, node-level unit tests, full-graph integration
+                       tests (including the full HITL pause/resume flow,
+                       provider-failure injection, and the BLOCK path),
                        end-to-end incident tests (create/run/approve,
                        rate limiting, body size limits, SLA timeout),
                        policy engine tests, remediation tool tests

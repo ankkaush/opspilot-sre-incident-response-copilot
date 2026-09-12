@@ -21,6 +21,13 @@ RecommendedAction = Literal[
     "toggle_feature_flag",
     "escalate",
     "no_action",
+    # Always BLOCKed by the policy engine (opspilot.agent.policy) — an
+    # irreversible action this system must never execute, no matter how the
+    # evidence is framed. Included in the vocabulary (not just the policy
+    # table) so a real diagnosis can actually name it and be blocked for
+    # real, rather than BLOCK only ever being reachable via a synthetic
+    # out-of-vocabulary action type in a unit test.
+    "delete_data",
 ]
 
 

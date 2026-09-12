@@ -78,6 +78,7 @@ _RISK_TABLE = {
     "scale_service": "low",
     "toggle_feature_flag": "medium",
     "rollback_deployment": "medium",
+    "delete_data": "critical",
 }
 
 

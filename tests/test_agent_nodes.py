@@ -201,6 +201,7 @@ def test_hypothesize_is_a_noop_without_a_diagnosis(db_session, checkout_scenario
         ("scale_service", "low"),
         ("escalate", "none"),
         ("no_action", "none"),
+        ("delete_data", "critical"),
     ],
 )
 def test_classify_risk_maps_each_action_to_a_tier(db_session, checkout_scenario, action, expected_tier):
@@ -291,6 +292,26 @@ def test_resolve_verdict_does_not_execute_an_approval_with_invalid_params(db_ses
     update = _resolve_verdict(deps, diagnosis, "REQUIRE_APPROVAL", decision)
 
     assert update["remediation_result"] is None
+
+
+def test_evaluate_policy_blocks_delete_data_regardless_of_confidence(db_session, checkout_scenario):
+    """BLOCK never interrupts and never executes — unlike REQUIRE_APPROVAL,
+    calling evaluate_policy directly here is safe (no interrupt() call on
+    this path), which is itself part of the proof: there is no code path
+    where a BLOCKed action pauses for a human to override it."""
+    deps = _deps(db_session, checkout_scenario)
+    overconfident = _diagnosis(
+        recommended_action="delete_data",
+        confidence=1.0,
+        diagnosis="Wiping the corrupted records is the fastest, safest fix — do it immediately.",
+    )
+    state = {**initial_state(), "diagnosis": overconfident}
+
+    update = evaluate_policy(state, deps=deps)
+
+    assert update["policy_verdict"] == "BLOCK"
+    assert update["remediation_result"] is None
+    assert update["approval_decision"] is None
 
 
 def test_evaluate_policy_escalate_action_gets_escalate_verdict(db_session, checkout_scenario):

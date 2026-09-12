@@ -16,6 +16,7 @@ _ALL_KNOWN_ACTION_TYPES = [
     "scale_service",
     "toggle_feature_flag",
     "rollback_deployment",
+    "delete_data",
 ]
 
 
@@ -28,6 +29,10 @@ _ALL_KNOWN_ACTION_TYPES = [
         ("scale_service", "EXECUTE"),
         ("toggle_feature_flag", "REQUIRE_APPROVAL"),
         ("rollback_deployment", "REQUIRE_APPROVAL"),
+        # Explicitly, deliberately BLOCKed — not a fallthrough case (see the
+        # "unrecognized action types" test below for that). No decision, no
+        # amount of approval, ever turns this into EXECUTE.
+        ("delete_data", "BLOCK"),
     ],
 )
 def test_verdict_matches_the_risk_table_for_every_known_action(action_type, expected_verdict):
@@ -46,7 +51,7 @@ def test_every_known_action_type_gets_a_defined_verdict(action_type):
 
 @pytest.mark.parametrize(
     "garbage_action_type",
-    ["delete_data", "drop_database", "", "ROLLBACK_DEPLOYMENT", "rollback_deployment "],
+    ["drop_database", "shutdown_service", "", "ROLLBACK_DEPLOYMENT", "rollback_deployment "],
 )
 def test_unrecognized_action_types_default_to_block_not_execute(garbage_action_type):
     """No silent fallthrough: an action type outside the table is BLOCKed —

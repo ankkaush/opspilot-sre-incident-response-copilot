@@ -41,6 +41,11 @@ _RISK_TABLE: dict[str, PolicyVerdict] = {
     "scale_service": "EXECUTE",
     "toggle_feature_flag": "REQUIRE_APPROVAL",
     "rollback_deployment": "REQUIRE_APPROVAL",
+    # Explicitly BLOCKed, not just defaulted — this action is *in* the
+    # vocabulary specifically so it can be recommended (and then actually
+    # blocked) rather than being unreachable. No amount of human approval
+    # ever turns this into EXECUTE; there's no code path that lets it.
+    "delete_data": "BLOCK",
 }
 
 

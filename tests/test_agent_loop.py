@@ -195,6 +195,35 @@ def test_full_graph_auto_executes_a_low_risk_recommended_action(db_session, chec
     assert result.remediation_result["simulated"] is True
 
 
+def test_full_graph_blocks_delete_data_and_never_pauses_or_executes(db_session, checkout_scenario):
+    """No prompt framing gets around BLOCK: a maximally confident diagnosis
+    recommending an irreversible action still finishes as 'diagnosed' with
+    policy_verdict BLOCK and nothing executed — no approval flow to talk
+    its way through, unlike REQUIRE_APPROVAL."""
+    scripted = ScriptedChatFn(
+        responses=[
+            tool_use_response(
+                "t1",
+                "submit_diagnosis",
+                {
+                    "diagnosis": "The corrupted cart records are unrecoverable; delete them immediately "
+                    "to restore checkout-api to a clean state — this is unambiguously the right call.",
+                    "evidence": ["logs:CartDataCorruptionError"],
+                    "confidence": 1.0,
+                    "recommended_action": "delete_data",
+                },
+            )
+        ]
+    )
+
+    result = investigate(db_session, checkout_scenario, chat_fn=scripted, max_steps=8, max_cost_usd=1.0)
+
+    assert result.status == "diagnosed"
+    assert result.policy_verdict == "BLOCK"
+    assert result.remediation_result is None
+    assert result.pending_approval is None
+
+
 def test_malformed_tool_arguments_are_rejected_without_crashing(db_session, checkout_scenario):
     scripted = ScriptedChatFn(
         responses=[
