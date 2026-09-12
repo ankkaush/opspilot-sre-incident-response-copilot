@@ -8,12 +8,14 @@ while-loop had no inspectable intermediate state and no clean point to pause
 or resume from. Nothing about what the agent can *do* changed: same five
 tools, same submit_diagnosis contract, same deterministic ceilings.
 
-`investigate()` keeps the exact signature and return type it always had, so
-nothing outside this module (routers/incidents.py, tests) needed to change
-for the migration — that's deliberate: the graph is an internal
-implementation detail of "how an investigation runs," not a new public
-contract.
+`investigate()` keeps the return type and nearly the signature it always
+had (routers/incidents.py calls run_investigation/resume_investigation
+directly now that both exist, since it needs a stable thread_id across
+separate HTTP requests) — the graph stays an internal implementation
+detail of "how an investigation runs," not a new public contract.
 """
+
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -60,13 +62,21 @@ def investigate(
     scenario: Scenario,
     *,
     chat_fn: ChatFn | None = None,
+    thread_id: str | None = None,
     max_steps: int | None = None,
     max_cost_usd: float | None = None,
 ) -> InvestigationResult:
+    """Convenience wrapper for a single run. Since v0.2 Phase 3, an
+    investigation can legitimately come back with status "awaiting_approval"
+    instead of finishing — resuming it is `opspilot.agent.graph.
+    resume_investigation`, called with the same `thread_id` you pass here
+    (or read back from nowhere, if you let this generate one — pass an
+    explicit `thread_id` whenever you might need to resume)."""
     return run_investigation(
         session,
         scenario,
         chat_fn=chat_fn or _default_chat_fn(),
+        thread_id=thread_id or f"investigate-{uuid4()}",
         max_steps=max_steps,
         max_cost_usd=max_cost_usd,
     )

@@ -12,17 +12,22 @@ import json
 import logging
 import re
 
+from langgraph.types import interrupt
 from pydantic import ValidationError
 
-from opspilot.agent.client import call_with_retries, estimate_cost_usd
+from opspilot.agent.client import TransientProviderError, call_with_retries, estimate_cost_usd
 from opspilot.agent.policy import ProposedAction
 from opspilot.agent.policy import evaluate as evaluate_policy_verdict
 from opspilot.agent.remediation_tools import (
     RemediationContext,
     RestartServiceArgs,
+    RollbackDeploymentArgs,
     ScaleServiceArgs,
+    ToggleFeatureFlagArgs,
     restart_service,
+    rollback_deployment,
     scale_service,
+    toggle_feature_flag,
 )
 from opspilot.agent.schemas import SubmitDiagnosisArgs, ToolCallRecord
 from opspilot.agent.state import GraphState, NodeDeps
@@ -49,6 +54,17 @@ _AUTO_EXECUTABLE = {
     "scale_service": lambda ctx: scale_service(ctx, ScaleServiceArgs()),
 }
 
+# Action types that need a human's approval *and* concrete parameters before
+# they can run — a real SRE approving a rollback specifies which version,
+# they don't let the system guess. The API validates `params` against the
+# same schema before ever resuming the graph (see routers/incidents.py);
+# this node validates again, defense-in-depth, and simply doesn't execute
+# if the params turn out to be invalid.
+_APPROVABLE_ACTIONS = {
+    "rollback_deployment": (RollbackDeploymentArgs, rollback_deployment),
+    "toggle_feature_flag": (ToggleFeatureFlagArgs, toggle_feature_flag),
+}
+
 _TOOLS = [*anthropic_tool_definitions(), SUBMIT_DIAGNOSIS_TOOL]
 
 # classify_risk's own preview table — informational only, superseded as the
@@ -71,11 +87,23 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
     function — the self-loop lives in the graph's edges, not in here."""
     ctx = ToolContext(session=deps.session, scenario=deps.scenario)
     settings = get_settings()
-
-    response = call_with_retries(
-        deps.chat_fn, messages=state["messages"], tools=_TOOLS, system=system_prompt(deps.scenario)
-    )
     step = state["steps_used"] + 1
+
+    try:
+        response = call_with_retries(
+            deps.chat_fn, messages=state["messages"], tools=_TOOLS, system=system_prompt(deps.scenario)
+        )
+    except TransientProviderError as exc:
+        # Bounded retry already happened inside call_with_retries and still
+        # failed — this is the graceful give-up, not a crash: a defined
+        # terminal state (route_after_gather_context sends this straight to
+        # decide), not an unhandled exception bubbling out of the graph.
+        log.error(
+            "model call failed after exhausting retries — giving up gracefully",
+            extra={"extra_fields": {"scenario_key": deps.scenario.key, "step": step, "error": str(exc)}},
+        )
+        return {"steps_used": step, "provider_error": str(exc)}
+
     cost = state["estimated_cost_usd"] + estimate_cost_usd(
         settings.anthropic_model, response.input_tokens, response.output_tokens
     )
@@ -172,6 +200,10 @@ def _tool_result(tool_use_id: str, content: str, *, is_error: bool = False) -> d
 
 
 def route_after_gather_context(state: GraphState, *, deps: NodeDeps) -> str:
+    if state["provider_error"] is not None:
+        # Give up now — looping back to gather_context would just repeat
+        # the same exhausted-retries failure.
+        return "ceiling"
     if state["diagnosis"] is not None:
         return "diagnosed"
     if state["estimated_cost_usd"] > deps.max_cost_usd or state["steps_used"] >= deps.max_steps:
@@ -215,21 +247,46 @@ def classify_risk(state: GraphState, *, deps: NodeDeps) -> dict:
     return {"risk_tier": _RISK_TABLE.get(diagnosis.recommended_action, "unknown")}
 
 
-def evaluate_policy(state: GraphState, *, deps: NodeDeps) -> dict:
-    """The real gate — `classify_risk` above is a preview; this is the
-    module (opspilot.agent.policy) that actually decides, keyed only on
-    `recommended_action`, never on the diagnosis text or its confidence.
-    A REQUIRE_APPROVAL or BLOCK verdict executes nothing here — that's
-    correct for this phase; the approval flow that could later turn a
-    REQUIRE_APPROVAL into an execution is v0.2 Phase 3."""
-    diagnosis = state["diagnosis"]
-    if diagnosis is None:
-        return {"policy_verdict": None, "remediation_result": None}
+def _execute_approved_action(deps: NodeDeps, action_type: str, params: dict | None) -> dict | None:
+    entry = _APPROVABLE_ACTIONS.get(action_type)
+    if entry is None:
+        return None
+    args_model, handler = entry
+    try:
+        validated = args_model.model_validate(params or {})
+    except ValidationError as exc:
+        log.warning(
+            "approved action had invalid params — not executing",
+            extra={"extra_fields": {"action_type": action_type, "error": str(exc)}},
+        )
+        return None
+    ctx = RemediationContext(session=deps.session, scenario=deps.scenario)
+    return handler(ctx, validated)
 
-    action = ProposedAction(
-        action_type=diagnosis.recommended_action, target=deps.scenario.service.name, params={}
-    )
-    verdict = evaluate_policy_verdict(action)
+
+def _resolve_verdict(
+    deps: NodeDeps, diagnosis: SubmitDiagnosisArgs, verdict, decision: dict | None
+) -> dict:
+    """The part of policy evaluation that has no interrupt() call in it —
+    deliberately factored out so it's directly unit-testable (see
+    tests/test_agent_nodes.py) without needing a live graph execution
+    context, which raw `interrupt()` calls require and plain function calls
+    don't provide.
+
+    `decision` is None on every path except a resolved REQUIRE_APPROVAL
+    (where `evaluate_policy` already has the human's — or the SLA-timeout
+    path's — answer in hand before calling this)."""
+    if verdict == "REQUIRE_APPROVAL":
+        remediation_result = None
+        if decision is not None and decision.get("approved"):
+            remediation_result = _execute_approved_action(
+                deps, diagnosis.recommended_action, decision.get("params")
+            )
+        return {
+            "policy_verdict": verdict,
+            "remediation_result": remediation_result,
+            "approval_decision": decision,
+        }
 
     remediation_result = None
     if verdict == "EXECUTE":
@@ -240,11 +297,49 @@ def evaluate_policy(state: GraphState, *, deps: NodeDeps) -> dict:
         # "no_action" also verdicts EXECUTE but has no executor — nothing to
         # run, and remediation_result correctly stays None.
 
-    return {"policy_verdict": verdict, "remediation_result": remediation_result}
+    return {"policy_verdict": verdict, "remediation_result": remediation_result, "approval_decision": None}
+
+
+def evaluate_policy(state: GraphState, *, deps: NodeDeps) -> dict:
+    """The real gate — `classify_risk` above is a preview; this is the
+    module (opspilot.agent.policy) that actually decides, keyed only on
+    `recommended_action`, never on the diagnosis text or its confidence.
+
+    On REQUIRE_APPROVAL this calls `interrupt()`, which pauses the graph
+    here (persisted via the process-level checkpointer in graph.py) until
+    something resumes it with a decision. Everything above the interrupt
+    call must be safe to re-run unchanged — LangGraph re-enters this
+    function from the top on resume, and `interrupt()` only then returns
+    the decision instead of pausing again. That's why the verdict
+    computation above has no side effects: it's fine to redo it.
+    """
+    diagnosis = state["diagnosis"]
+    if diagnosis is None:
+        return {"policy_verdict": None, "remediation_result": None, "approval_decision": None}
+
+    action = ProposedAction(
+        action_type=diagnosis.recommended_action, target=deps.scenario.service.name, params={}
+    )
+    verdict = evaluate_policy_verdict(action)
+
+    decision = None
+    if verdict == "REQUIRE_APPROVAL":
+        decision = interrupt(
+            {
+                "action_type": diagnosis.recommended_action,
+                "service": deps.scenario.service.name,
+                "diagnosis": diagnosis.diagnosis,
+                "confidence": diagnosis.confidence,
+            }
+        )
+
+    return _resolve_verdict(deps, diagnosis, verdict, decision)
 
 
 def decide(state: GraphState, *, deps: NodeDeps) -> dict:
-    if state["diagnosis"] is not None:
+    if state["provider_error"] is not None:
+        status = "incomplete_provider_error"
+    elif state["diagnosis"] is not None:
         status = "diagnosed"
     elif state["estimated_cost_usd"] > deps.max_cost_usd:
         status = "incomplete_cost_ceiling"

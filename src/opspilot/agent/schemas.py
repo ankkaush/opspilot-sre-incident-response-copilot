@@ -59,8 +59,10 @@ class InvestigationResult(BaseModel):
     scenario_key: str
     status: Literal[
         "diagnosed",
+        "awaiting_approval",
         "incomplete_step_ceiling",
         "incomplete_cost_ceiling",
+        "incomplete_provider_error",
     ]
     diagnosis: SubmitDiagnosisArgs | None = None
     evidence_trail: list[ToolCallRecord] = Field(default_factory=list)
@@ -77,6 +79,14 @@ class InvestigationResult(BaseModel):
     # Set by evaluate_policy (v0.2 Phase 2) — the actual gate, keyed only on
     # recommended_action, never on diagnosis text or confidence. None when
     # no diagnosis was reached. remediation_result is only ever populated
-    # when policy_verdict is EXECUTE and there was something to run.
+    # when policy_verdict is EXECUTE (or a REQUIRE_APPROVAL action was
+    # subsequently approved) and there was something to run.
     policy_verdict: PolicyVerdict | None = None
     remediation_result: dict | None = None
+
+    # v0.2 Phase 3 — human-in-the-loop. `pending_approval` is the interrupt
+    # payload while status == "awaiting_approval" (what's being asked, of
+    # whom, why); `approval_decision` is what a human (or the SLA-timeout
+    # path) ultimately decided, once resolved.
+    pending_approval: dict | None = None
+    approval_decision: dict | None = None

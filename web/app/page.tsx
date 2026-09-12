@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   const [incidents, scenarios] = await Promise.all([api.listIncidents(), api.listScenarios()]);
+  const pending = incidents.filter((i) => i.status === "awaiting_approval");
 
   return (
     <main>
@@ -26,6 +27,23 @@ export default async function HomePage() {
         </select>
         <button type="submit">Create &amp; run</button>
       </form>
+
+      <h2>Pending approvals</h2>
+      {pending.length === 0 ? (
+        <p className="muted">Nothing waiting on a human right now.</p>
+      ) : (
+        <ul className="pending-queue">
+          {pending.map((incident) => (
+            <li key={incident.id}>
+              <Link href={`/incidents/${incident.id}`}>#{incident.id}</Link> — {incident.service_name}:{" "}
+              <strong>{incident.pending_approval?.action_type}</strong>
+              {incident.awaiting_since && (
+                <span className="muted"> · waiting since {new Date(incident.awaiting_since).toLocaleString()}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
       <h2>Incidents</h2>
       {incidents.length === 0 ? (

@@ -70,10 +70,36 @@ class IncidentDetail(IncidentSummary):
     diagnosis: dict | None
     started_at: dt.datetime | None
     completed_at: dt.datetime | None
+    # v0.2 Phase 3 — set while status == "awaiting_approval": what's being
+    # asked, of whom, and why (the interrupt payload). awaiting_since
+    # anchors the SLA-timeout check.
+    pending_approval: dict | None = None
+    awaiting_since: dt.datetime | None = None
+
+
+class ApprovalDecision(BaseModel):
+    approved: bool
+    actor: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Who made this decision — recorded in the audit trail.",
+    )
+    # Required for rollback_deployment (target_version) and
+    # toggle_feature_flag (flag_name) — validated against the matching
+    # remediation tool's own arg schema before the graph is ever resumed.
+    # Ignored (and safe to omit) for every other action type.
+    params: dict | None = None
 
 
 class TimelineEntry(BaseModel):
-    kind: Literal["incident_started", "evidence_gathered", "diagnosis_formed", "final_status"]
+    kind: Literal[
+        "incident_started",
+        "evidence_gathered",
+        "diagnosis_formed",
+        "approval_requested",
+        "approval_decided",
+        "final_status",
+    ]
     step: int | None
     label: str
     detail: dict | None

@@ -44,6 +44,13 @@ export type Diagnosis = {
   recommended_action: string;
 };
 
+export type PendingApproval = {
+  action_type: string;
+  service: string;
+  diagnosis: string;
+  confidence: number;
+};
+
 export type Incident = {
   id: number;
   scenario_key: string;
@@ -55,10 +62,18 @@ export type Incident = {
   diagnosis: Diagnosis | null;
   started_at: string | null;
   completed_at: string | null;
+  pending_approval: PendingApproval | null;
+  awaiting_since: string | null;
 };
 
 export type TimelineEntry = {
-  kind: "incident_started" | "evidence_gathered" | "diagnosis_formed" | "final_status";
+  kind:
+    | "incident_started"
+    | "evidence_gathered"
+    | "diagnosis_formed"
+    | "approval_requested"
+    | "approval_decided"
+    | "final_status";
   step: number | null;
   label: string;
   detail: Record<string, unknown> | null;
@@ -69,6 +84,37 @@ export type Timeline = {
   incident_id: number;
   entries: TimelineEntry[];
 };
+
+// The graph node an incident is conceptually "sitting in," derived from its
+// status — this is the dashboard's graph-state visualization. There's no
+// separate API field for this: status already carries enough information,
+// and inventing a parallel "current_node" field the backend would have to
+// keep in sync would be duplication for no real benefit.
+export const GRAPH_NODES = [
+  "gather_context",
+  "hypothesize",
+  "classify_risk",
+  "evaluate_policy",
+  "decide",
+] as const;
+
+export function currentGraphNode(status: string): (typeof GRAPH_NODES)[number] | null {
+  switch (status) {
+    case "open":
+      return null;
+    case "running":
+      return "gather_context";
+    case "awaiting_approval":
+      return "evaluate_policy";
+    case "diagnosed":
+    case "incomplete_step_ceiling":
+    case "incomplete_cost_ceiling":
+    case "incomplete_provider_error":
+      return "decide";
+    default:
+      return null;
+  }
+}
 
 export const api = {
   listScenarios: () => apiFetch<Scenario[]>("/api/v1/scenarios"),
@@ -82,4 +128,12 @@ export const api = {
     }),
   runIncident: (id: number) =>
     apiFetch<Incident>(`/api/v1/incidents/${id}/run`, { method: "POST" }),
+  decideApproval: (
+    id: number,
+    decision: { approved: boolean; actor: string; params?: Record<string, unknown> }
+  ) =>
+    apiFetch<Incident>(`/api/v1/incidents/${id}/approvals`, {
+      method: "POST",
+      body: JSON.stringify(decision),
+    }),
 };

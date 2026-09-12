@@ -34,6 +34,14 @@ class GraphState(TypedDict):
     risk_tier: str | None
     policy_verdict: PolicyVerdict | None
     remediation_result: dict | None
+    # Set by evaluate_policy only on the REQUIRE_APPROVAL path, once a human
+    # decision has actually come back through interrupt()/resume — None
+    # while genuinely pending, and (importantly) still None on every path
+    # that never needed a human at all.
+    approval_decision: dict | None
+    # Set by gather_context if the model call fails after exhausting
+    # retries — the graceful-give-up path, distinct from a crash.
+    provider_error: str | None
     status: str | None
 
 
@@ -49,6 +57,8 @@ def initial_state() -> GraphState:
         risk_tier=None,
         policy_verdict=None,
         remediation_result=None,
+        approval_decision=None,
+        provider_error=None,
         status=None,
     )
 

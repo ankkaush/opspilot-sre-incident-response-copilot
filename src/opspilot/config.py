@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     max_request_body_bytes: int = 64 * 1024
 
+    # v0.2 Phase 3: if nobody approves or denies a paused incident within
+    # this many seconds, it's auto-escalated rather than left hanging
+    # forever. Checked lazily on read (no background scheduler — consistent
+    # with the "no queues/Redis" scope decision), so the exact moment of
+    # escalation is "whenever the incident is next fetched," not a precise
+    # timer tick.
+    approval_sla_seconds: int = 3600
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

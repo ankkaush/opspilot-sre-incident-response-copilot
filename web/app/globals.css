@@ -7,6 +7,7 @@
   --accent: #b45309;
   --danger: #b91c1c;
   --ok: #15803d;
+  --warn: #b45309;
 }
 
 * {
@@ -110,8 +111,101 @@ th {
 }
 
 .status-incomplete_step_ceiling,
-.status-incomplete_cost_ceiling {
+.status-incomplete_cost_ceiling,
+.status-incomplete_provider_error {
   color: var(--danger);
+}
+
+.status-awaiting_approval {
+  color: var(--warn);
+  background: #fef3e8;
+}
+
+.pending-queue {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pending-queue li {
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.graph-state {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.graph-node {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.graph-node.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.approval-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 360px;
+  margin: 12px 0 24px;
+}
+
+.approval-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.approval-form input[type="text"] {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
+.approval-form .checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button.approve {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+button.deny {
+  background: var(--danger);
+  border-color: var(--danger);
 }
 
 .timeline {

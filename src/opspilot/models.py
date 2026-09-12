@@ -136,7 +136,8 @@ class Incident(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     scenario_id: Mapped[int] = mapped_column(ForeignKey("scenarios.id"), index=True)
-    # open -> running -> diagnosed | incomplete_step_ceiling | incomplete_cost_ceiling
+    # open -> running -> (awaiting_approval -> running again ->) diagnosed |
+    #   incomplete_step_ceiling | incomplete_cost_ceiling | incomplete_provider_error
     status: Mapped[str] = mapped_column(String(32), default="open")
     diagnosis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     steps_used: Mapped[int | None] = mapped_column(nullable=True)
@@ -144,6 +145,13 @@ class Incident(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # v0.2 Phase 3 — human-in-the-loop. pending_approval is the interrupt
+    # payload while status == "awaiting_approval" (what's being asked and
+    # why); awaiting_since anchors the SLA-timeout check. Both cleared once
+    # an approval decision resolves the pause.
+    pending_approval: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    awaiting_since: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     scenario: Mapped["Scenario"] = relationship()
     audit_entries: Mapped[list["AuditLogEntry"]] = relationship(

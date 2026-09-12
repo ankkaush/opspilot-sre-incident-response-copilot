@@ -1,5 +1,6 @@
 """Full-graph integration tests, driven through the public `investigate()`
-entrypoint with a scripted model client — no network access, no API key.
+entrypoint (and, for the human-in-the-loop tests, `resume_investigation`
+directly) with a scripted model client — no network access, no API key.
 As of v0.2 Phase 1 this exercises the LangGraph state machine end to end
 rather than the retired while-loop; the point of these tests hasn't
 changed — a full investigation should still produce a grounded diagnosis,
@@ -7,12 +8,14 @@ and the deterministic ceilings/validation should still stop a misbehaving
 run — only the thing under test's internal control flow has.
 """
 
+from opspilot.agent.client import TransientProviderError
+from opspilot.agent.graph import resume_investigation
 from opspilot.agent.loop import investigate
 from tests.fakes import ScriptedChatFn, text_response, tool_use_response
 
 
-def test_happy_path_produces_grounded_diagnosis(db_session, checkout_scenario):
-    scripted = ScriptedChatFn(
+def _happy_path_script(action: str) -> ScriptedChatFn:
+    return ScriptedChatFn(
         responses=[
             tool_use_response("t1", "get_recent_deployments", {"since_minutes": 60}),
             tool_use_response("t2", "get_logs", {"level": "error", "since_minutes": 60}),
@@ -23,30 +26,115 @@ def test_happy_path_produces_grounded_diagnosis(db_session, checkout_scenario):
                     "diagnosis": "Deployment v2.8 exhausted the DB connection pool.",
                     "evidence": ["deployment:v2.8", "logs:connection pool exhausted"],
                     "confidence": 0.9,
-                    "recommended_action": "rollback_deployment",
+                    "recommended_action": action,
                 },
             ),
         ]
     )
 
-    result = investigate(db_session, checkout_scenario, chat_fn=scripted, max_steps=8, max_cost_usd=1.0)
 
-    assert result.status == "diagnosed"
+def test_gated_recommendation_pauses_for_approval_instead_of_finishing(db_session, checkout_scenario):
+    """v0.2 Phase 3's core behavior change: a diagnosis this confident and
+    well-grounded still doesn't execute rollback_deployment on its own —
+    the graph pauses and waits for a human, exactly like a REQUIRE_APPROVAL
+    verdict is supposed to mean."""
+    result = investigate(
+        db_session,
+        checkout_scenario,
+        chat_fn=_happy_path_script("rollback_deployment"),
+        thread_id="test-gated-pause",
+        max_steps=8,
+        max_cost_usd=1.0,
+    )
+
+    assert result.status == "awaiting_approval"
     assert result.diagnosis is not None
     assert result.diagnosis.recommended_action == "rollback_deployment"
     assert result.steps_used == 3
     assert len(result.evidence_trail) == 3
-    assert result.evidence_trail[0].tool_name == "get_recent_deployments"
-    assert result.evidence_trail[0].error is None
-    assert result.evidence_trail[2].tool_name == "submit_diagnosis"
-    # New in v0.2 Phase 1 — the graph's hypothesize/classify_risk nodes:
+    # New in v0.2 Phase 1 — the graph's hypothesize/classify_risk nodes still
+    # ran (they're upstream of evaluate_policy's interrupt):
     assert result.evidence_grounded is True
-    assert result.ungrounded_evidence == []
     assert result.risk_tier == "medium"
-    # New in v0.2 Phase 2 — the real policy gate: rollback is REQUIRE_APPROVAL,
-    # so nothing actually executed even though the diagnosis is confident.
-    assert result.policy_verdict == "REQUIRE_APPROVAL"
+    # Genuinely paused, not silently decided:
+    assert result.policy_verdict is None
     assert result.remediation_result is None
+    assert result.pending_approval == {
+        "action_type": "rollback_deployment",
+        "service": "checkout-api",
+        "diagnosis": "Deployment v2.8 exhausted the DB connection pool.",
+        "confidence": 0.9,
+    }
+
+
+def test_full_hitl_flow_approval_resumes_and_executes_exactly_once(db_session, checkout_scenario):
+    thread_id = "test-hitl-approve"
+    paused = investigate(
+        db_session,
+        checkout_scenario,
+        chat_fn=_happy_path_script("rollback_deployment"),
+        thread_id=thread_id,
+        max_steps=8,
+        max_cost_usd=1.0,
+    )
+    assert paused.status == "awaiting_approval"
+
+    decision = {"approved": True, "actor": "alice", "params": {"target_version": "v2.7"}}
+    resumed = resume_investigation(
+        db_session,
+        checkout_scenario,
+        chat_fn=ScriptedChatFn(responses=[]),  # must never be called — resuming skips gather_context
+        thread_id=thread_id,
+        decision=decision,
+    )
+
+    assert resumed.status == "diagnosed"
+    assert resumed.policy_verdict == "REQUIRE_APPROVAL"
+    assert resumed.approval_decision == decision
+    assert resumed.remediation_result is not None
+    assert resumed.remediation_result["action"] == "rollback_deployment"
+    assert resumed.remediation_result["target_version"] == "v2.7"
+    # Evidence gathered before the pause carries forward, not duplicated:
+    assert len(resumed.evidence_trail) == 3
+
+
+def test_full_hitl_flow_denial_resumes_without_executing(db_session, checkout_scenario):
+    thread_id = "test-hitl-deny"
+    paused = investigate(
+        db_session,
+        checkout_scenario,
+        chat_fn=_happy_path_script("rollback_deployment"),
+        thread_id=thread_id,
+        max_steps=8,
+        max_cost_usd=1.0,
+    )
+    assert paused.status == "awaiting_approval"
+
+    decision = {"approved": False, "actor": "bob", "params": None}
+    resumed = resume_investigation(
+        db_session,
+        checkout_scenario,
+        chat_fn=ScriptedChatFn(responses=[]),  # must never be called — resuming skips gather_context
+        thread_id=thread_id,
+        decision=decision,
+    )
+
+    assert resumed.status == "diagnosed"
+    assert resumed.policy_verdict == "REQUIRE_APPROVAL"
+    assert resumed.approval_decision == decision
+    assert resumed.remediation_result is None
+
+
+def test_provider_failure_ends_the_investigation_gracefully(db_session, checkout_scenario):
+    """Failure-injection, full graph: the model is unreachable for every
+    call. Must end in a defined terminal state, not an unhandled
+    exception."""
+    always_fails = ScriptedChatFn(responses=[], default=TransientProviderError("simulated timeout"))
+
+    result = investigate(db_session, checkout_scenario, chat_fn=always_fails, max_steps=8, max_cost_usd=1.0)
+
+    assert result.status == "incomplete_provider_error"
+    assert result.diagnosis is None
 
 
 def test_full_graph_diagnoses_the_payments_scenario_as_escalate(db_session, payments_scenario):
@@ -178,7 +266,10 @@ def test_malformed_diagnosis_is_rejected_and_loop_continues(db_session, checkout
                     "diagnosis": "Corrected diagnosis with valid confidence.",
                     "evidence": ["deployment:v2.8"],
                     "confidence": 0.8,
-                    "recommended_action": "rollback_deployment",
+                    # "escalate", not "rollback_deployment" — this test is about
+                    # gather_context's malformed-diagnosis recovery, not the
+                    # approval pause (covered separately, see the HITL tests).
+                    "recommended_action": "escalate",
                 },
             ),
         ]

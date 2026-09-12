@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.2 Phase 2 — Deterministic Policy Engine. v0.1 is complete and frozen; v0.2 Phase 1 replaced the control flow with a LangGraph state machine, and this phase adds the actual enforcement gate.
+**Status:** v0.2 Phase 3 — Human-in-the-Loop, Interrupts & Recovery. v0.1 is complete and frozen; v0.2 Phase 1 replaced the control flow with a LangGraph state machine, Phase 2 added the deterministic policy gate, and this phase turns a `REQUIRE_APPROVAL` verdict into a real pause/resume instead of a dead end.
 
 ## What exists right now
 
@@ -48,7 +48,7 @@ into this repo).
   Reached by a new `evaluate_policy` graph node between `classify_risk` and
   `decide`. Proven adversarially: a diagnosis engineered to sound maximally
   confident and urgent about a gated action still gets `REQUIRE_APPROVAL`
-  (`tests/test_agent_nodes.py::test_evaluate_policy_is_not_swayed_by_confident_framing`).
+  (`tests/test_policy.py::test_verdict_is_independent_of_target_and_params`).
 - **Simulated remediation tools** (`opspilot.agent.remediation_tools`):
   `rollback_deployment`, `restart_service`, `scale_service`,
   `toggle_feature_flag` — schema-validated and parameterized, never a
@@ -58,36 +58,50 @@ into this repo).
   these, and only after a verdict of `EXECUTE`. Today that's just
   `restart_service`/`scale_service` (the two `EXECUTE`-tier actions with no
   extra parameters to collect) — `rollback_deployment` and
-  `toggle_feature_flag` are gated `REQUIRE_APPROVAL` and never auto-execute.
-
-There is **no human-in-the-loop yet** — a `REQUIRE_APPROVAL` verdict
-currently just... doesn't execute. Turning that into an actual pause/resume
-with an approval API is v0.2 Phase 3. There is also no memory, tracing, or
-eval yet.
-
+  `toggle_feature_flag` are gated `REQUIRE_APPROVAL` and, as of this phase,
+  really do pause for a human rather than silently going nowhere.
+- **Real human-in-the-loop** — `evaluate_policy` calls LangGraph's
+  `interrupt()` on a `REQUIRE_APPROVAL` verdict, pausing the graph mid-node.
+  A process-lifetime `InMemorySaver` checkpointer (`opspilot.agent.graph`)
+  makes that pause resumable from an entirely different HTTP request, with a
+  fresh DB session and a fresh compiled graph object — only the checkpointer
+  instance and a stable `thread_id` (`incident-{id}`) need to carry over.
+  Deliberately in-memory, not database-backed: real pause/resume within one
+  running process, but a restart loses anything paused — durable,
+  restart-surviving checkpointing is v0.5's job, not v0.2's.
+  `POST /incidents/{id}/approvals` is the only way to resolve a pause; an
+  approval carries concrete parameters (a rollback's target version, a
+  flag's name) validated against the same remediation-tool schema before
+  the graph is ever resumed. A paused incident nobody decides on in time
+  auto-escalates via a lazy SLA-timeout check (no background scheduler —
+  checked whenever anything next reads the incident).
+- **Reliability**: a model call that exhausts `call_with_retries`' bounded
+  retries ends the investigation in a defined `incomplete_provider_error`
+  state — a graceful give-up, not a crash.
 - **A real Incident API** (`opspilot.routers.incidents`): create an Incident
   against a seeded Scenario, run it (calls the agent loop and persists every
-  tool call as an append-only audit-log row), fetch it, list all of them, or
-  fetch its timeline. Re-running an already-run Incident is refused (409) —
-  a deterministic rule, not a suggestion, matching the same "code decides"
-  principle as everything else here.
-- **An append-only audit trail**: every tool call the agent makes during a
-  run — including a rejected/invalid one — becomes its own `AuditLogEntry`
-  row, in order, linked to the Incident. Nothing here is ever updated or
-  deleted.
+  tool call as an append-only audit-log row), approve or deny a pending
+  action, fetch it, list all of them, or fetch its timeline. Re-running an
+  already-run Incident is refused (409) — a deterministic rule, not a
+  suggestion, matching the same "code decides" principle as everything else
+  here.
+- **An append-only audit trail**: every tool call, approval request, and
+  approval decision becomes its own `AuditLogEntry` row, in order, linked to
+  the Incident, with the approving actor's identity recorded. Nothing here
+  is ever updated or deleted.
 - **Security**: per-API-key rate limiting (in-memory, single-process — see
   the comment in `auth.py` for why that's the right amount of complexity
-  here) and a request-body-size limit, both new Phase 3 requirements, plus
-  input validation on incident creation (scenario key pattern + existence
-  check).
-- **A minimal dashboard** (`web/`, Next.js App Router): an incident list
-  with a "create & run" form, and an incident detail page rendering the
-  actual timeline — *incident started → evidence gathered (one entry per
-  tool call) → diagnosis formed → final status* — with the diagnosis and
-  cited evidence up top. No charts, no analytics; it's a real, honest record
-  of what the agent did, which is the whole Phase 3 dashboard requirement.
-  The API key is read only in server components/actions and never reaches
-  the browser bundle — see `web/lib/api.ts`.
+  here) and a request-body-size limit, plus input validation on incident
+  creation and on approval parameters.
+- **A dashboard** (`web/`, Next.js App Router): an incident list with a
+  "create & run" form and a pending-approvals queue; an incident detail page
+  showing a graph-state row (which node the incident is conceptually sitting
+  in), a live approval form when one's pending, the diagnosis, and the full
+  timeline — *incident started → evidence gathered → diagnosis formed →
+  approval requested → approval decided → final status*. No charts, no
+  analytics; a real, honest record of what happened. The API key is read
+  only in server components/actions and never reaches the browser bundle —
+  see `web/lib/api.ts`.
 
 ## Running an investigation
 
@@ -131,6 +145,11 @@ curl -X POST -H "X-API-Key: <your API_KEY>" -H "Content-Type: application/json" 
 
 curl -X POST -H "X-API-Key: <your API_KEY>" \
   http://localhost:8000/api/v1/incidents/1/run
+
+# If that pauses (status: "awaiting_approval"), resolve it:
+curl -X POST -H "X-API-Key: <your API_KEY>" -H "Content-Type: application/json" \
+  -d '{"approved": true, "actor": "alice", "params": {"target_version": "v2.7"}}' \
+  http://localhost:8000/api/v1/incidents/1/approvals
 
 curl -H "X-API-Key: <your API_KEY>" http://localhost:8000/api/v1/incidents/1/timeline
 ```
@@ -227,12 +246,15 @@ src/opspilot/
   agent/graph.py       Builds the LangGraph state machine, runs it
   agent/loop.py        Public investigate() entrypoint (delegates to graph.py)
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
-  routers/incidents.py Incident CRUD, run endpoint, timeline endpoint
+  routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
 alembic/               Migrations
 tests/                 Auth, migration round-trip, seed determinism,
                        tool unit tests, node-level unit tests, full-graph
-                       integration tests, end-to-end incident tests
-                       (create/run/timeline, rate limiting, body size limits),
+                       integration tests (including the full HITL
+                       pause/resume flow and provider-failure injection),
+                       end-to-end incident tests (create/run/approve,
+                       rate limiting, body size limits, SLA timeout),
                        policy engine tests, remediation tool tests
-web/                   Minimal Next.js dashboard (incident list + timeline)
+web/                   Next.js dashboard (incident list, pending-approvals
+                       queue, graph-state view, approval form, timeline)
 ```
