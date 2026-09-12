@@ -153,6 +153,13 @@ class Incident(Base):
     pending_approval: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     awaiting_since: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # v0.3 Phase 3 — the Langfuse trace id for the run/resume call that most
+    # recently touched this incident, so the dashboard can link straight to
+    # the full trace. Overwritten on resume (a paused incident's run and its
+    # eventual resume are two separate traces — see graph.py); the earlier
+    # trace id isn't lost, it's just not the one linked from here anymore.
+    langfuse_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     scenario: Mapped["Scenario"] = relationship()
     audit_entries: Mapped[list["AuditLogEntry"]] = relationship(
         back_populates="incident", order_by="AuditLogEntry.id"

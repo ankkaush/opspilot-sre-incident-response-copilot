@@ -11,6 +11,12 @@ from opspilot.models import Scenario
 
 MAX_TOOL_RESULT_CHARS = 4000
 
+# Bumped whenever system_prompt()'s text changes — attached to every
+# Langfuse trace (opspilot.agent.tracing) alongside GRAPH_VERSION, so a
+# prompt edit's effect on the eval scorecard is traceable to this exact
+# version, not just "sometime before/after."
+PROMPT_VERSION = "0.3.0"
+
 SUBMIT_DIAGNOSIS_TOOL = {
     "name": "submit_diagnosis",
     "description": (

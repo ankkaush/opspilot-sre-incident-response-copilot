@@ -11,7 +11,9 @@ export default async function HomePage() {
   return (
     <main>
       <h1>OpsPilot</h1>
-      <p className="muted">SRE Incident Response Copilot — synthetic environment</p>
+      <p className="muted">
+        SRE Incident Response Copilot — synthetic environment · <Link href="/eval">Eval runs</Link>
+      </p>
 
       <h2>Start a new investigation</h2>
       <form className="new-incident" action={createAndRunIncident}>

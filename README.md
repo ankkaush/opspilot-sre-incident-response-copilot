@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.3 Phase 2 — Evaluation Harness. v0.1 and v0.2 are complete and frozen; v0.3 Phase 1 built the 17-scenario golden dataset, and this phase is what actually runs the agent against it and scores the result.
+**Status:** v0.3 Phase 3 — Observability. v0.1 and v0.2 are complete and frozen; v0.3 Phase 1 built the 17-scenario golden dataset, Phase 2 built the harness that runs the agent against it and scores the result, and this phase wires Langfuse tracing through every node/model-call/tool-call and adds an agent-facing eval dashboard so a score can be traced back to the exact prompt version, tool calls, and reasoning that produced it.
 
 ## What exists right now
 
@@ -134,6 +134,33 @@ into this repo).
   analytics; a real, honest record of what happened. The API key is read
   only in server components/actions and never reaches the browser bundle —
   see `web/lib/api.ts`.
+- **Langfuse tracing** (`opspilot.agent.tracing`) — one trace per
+  `run_investigation`/`resume_investigation` call, with a nested span per
+  graph node, a `generation` observation per model call (input messages,
+  output content, token usage, cost), and a `tool` observation per tool
+  invocation (including error paths), all tagged with `graph_version` and
+  `prompt_version` metadata so a scorecard change can be attributed to the
+  exact code that produced it. Tracing is observability, never control: the
+  Langfuse client no-ops gracefully whenever `LANGFUSE_PUBLIC_KEY`/
+  `LANGFUSE_SECRET_KEY` aren't set, so an unconfigured account changes
+  visibility, never behavior. An explicit key-based redaction pass
+  (`mask=` on the Langfuse client) strips anything secret-shaped
+  (`api_key`, `authorization`, `password`, `token`, ...) from every payload
+  before it leaves the process. Every `Incident` persists the trace id of
+  its most recent run/resume, exposed as a "View trace" link on the
+  incident detail page; a resume gets its own trace (it may run in an
+  entirely different process, arbitrarily later) sharing the same
+  `thread_id` in its metadata so the pair is still findable in the
+  Langfuse UI.
+- **An agent-facing eval dashboard** (`/eval`, `/eval/[label]`) reading the
+  eval harness's saved JSON runs (`opspilot.routers.eval_runs`, read-only —
+  eval runs stay files under `eval_runs/`, never a DB table): a run list
+  with pass/fail-shaped metrics and cost/latency, and a per-run detail page
+  with the full scorecard plus a per-scenario table (policy-verdict
+  correctness, action exact-match, judge diagnosis score) and a "View
+  trace" link straight into the corresponding Langfuse trace — the
+  drill-through from score to reasoning the blueprint's "done when" for
+  this phase asks for.
 
 ## Running an investigation
 
@@ -172,6 +199,17 @@ python -m opspilot.eval --no-judge   # deterministic checks only, still real age
 
 Prints a scorecard, saves the full result to `eval_runs/<label>.json`, and
 — with `--compare-to` — a regression report against a previously saved run.
+
+## Tracing (optional)
+
+Add `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (and `LANGFUSE_BASE_URL` if
+your Langfuse account isn't on the default US-less cloud region — see
+`.env.example`) to trace every investigation and eval run. Leaving them
+unset is fully supported: the agent runs identically, it's just invisible
+to Langfuse. With them set, every `Incident` and eval-scenario result
+carries a clickable trace URL — visible on the incident detail page and the
+`/eval/[label]` scorecard — down to the individual model and tool calls
+that produced it.
 
 ## Running it
 
@@ -294,7 +332,10 @@ src/opspilot/
   agent/graph.py       Builds the LangGraph state machine, runs it
   agent/loop.py        Public investigate() entrypoint (delegates to graph.py)
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
+  agent/tracing.py     Langfuse tracing: redaction, trace/span/generation/
+                       tool-call context managers, trace URL lookup
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
+  routers/eval_runs.py Read-only API over eval_runs/*.json for the dashboard
   eval/deterministic.py Code-only scoring: policy/action match, tool
                        selection, errors, cost, tokens, latency
   eval/judge.py        LLM-as-judge: diagnosis accuracy, evidence
@@ -316,8 +357,11 @@ tests/                 Auth, migration round-trip, seed determinism +
                        rate limiting, body size limits, SLA timeout),
                        policy engine tests, remediation tool tests, eval
                        harness tests (deterministic scoring, judge parsing,
-                       full runner, regression detection, storage)
+                       full runner, regression detection, storage), tracing
+                       tests (redaction, serialization, no-op-when-
+                       unconfigured behavior)
 web/                   Next.js dashboard (incident list, pending-approvals
-                       queue, graph-state view, approval form, timeline)
+                       queue, graph-state view, approval form, timeline,
+                       eval run list + per-run scorecard with trace links)
 eval_runs/             Eval results (gitignored — regenerable output)
 ```

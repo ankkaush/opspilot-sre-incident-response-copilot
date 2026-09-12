@@ -21,3 +21,19 @@ def save_run(run: EvalRun, *, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
 
 def load_run(path: Path) -> EvalRun:
     return EvalRun.model_validate_json(path.read_text())
+
+
+def list_run_labels(*, runs_dir: Path = DEFAULT_RUNS_DIR) -> list[str]:
+    """Labels of every saved run, newest first — what the eval-runs API
+    (opspilot.routers.eval_runs) lists before loading any run in full."""
+    if not runs_dir.exists():
+        return []
+    files = sorted(runs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [f.stem for f in files]
+
+
+def load_run_by_label(label: str, *, runs_dir: Path = DEFAULT_RUNS_DIR) -> EvalRun | None:
+    path = runs_dir / f"{label}.json"
+    if not path.exists():
+        return None
+    return load_run(path)

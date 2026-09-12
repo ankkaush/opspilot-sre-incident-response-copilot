@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # timer tick.
     approval_sla_seconds: int = 3600
 
+    # v0.3 Phase 3: Langfuse tracing. Observability only — the Langfuse
+    # client itself no-ops gracefully when public_key/secret_key are unset,
+    # so leaving these blank never changes agent behavior, only visibility.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

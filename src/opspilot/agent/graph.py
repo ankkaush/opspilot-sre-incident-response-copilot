@@ -43,20 +43,40 @@ from opspilot.agent.nodes import (
 )
 from opspilot.agent.schemas import InvestigationResult
 from opspilot.agent.state import GraphState, NodeDeps, initial_state
+from opspilot.agent.support import PROMPT_VERSION
+from opspilot.agent.tracing import to_jsonable, trace_investigation, trace_node
 from opspilot.config import get_settings
 from opspilot.models import Scenario
 
 _CHECKPOINTER = InMemorySaver()
 
 
+def _traced(name: str, node_fn):
+    """Wraps a node function that's simple enough to trace generically —
+    one span per call, input/output captured whole. gather_context is
+    deliberately NOT wrapped this way; its internal model-call and
+    tool-call loop gets its own finer-grained spans directly inside
+    nodes.py instead of one span covering the whole thing."""
+
+    def wrapped(state):
+        with trace_node(name, input=to_jsonable({"diagnosis": state.get("diagnosis")})) as span:
+            result = node_fn(state)
+            span.update(output=to_jsonable(result))
+            return result
+
+    return wrapped
+
+
 def build_graph(deps: NodeDeps):
     graph = StateGraph(GraphState)
 
     graph.add_node("gather_context", partial(gather_context, deps=deps))
-    graph.add_node("hypothesize", partial(hypothesize, deps=deps))
-    graph.add_node("classify_risk", partial(classify_risk, deps=deps))
-    graph.add_node("evaluate_policy", partial(evaluate_policy, deps=deps))
-    graph.add_node("decide", partial(decide, deps=deps))
+    graph.add_node("hypothesize", _traced("hypothesize", partial(hypothesize, deps=deps)))
+    graph.add_node("classify_risk", _traced("classify_risk", partial(classify_risk, deps=deps)))
+    graph.add_node(
+        "evaluate_policy", _traced("evaluate_policy", partial(evaluate_policy, deps=deps))
+    )
+    graph.add_node("decide", _traced("decide", partial(decide, deps=deps)))
 
     graph.add_edge(START, "gather_context")
     graph.add_conditional_edges(
@@ -89,7 +109,9 @@ def _build_deps(
     )
 
 
-def _result_from_state(scenario: Scenario, final_state: dict) -> InvestigationResult:
+def _result_from_state(
+    scenario: Scenario, final_state: dict, *, langfuse_trace_id: str | None
+) -> InvestigationResult:
     interrupts = final_state.get("__interrupt__")
     if interrupts:
         # Paused mid-graph. `interrupts[0].value` is exactly the payload
@@ -110,6 +132,7 @@ def _result_from_state(scenario: Scenario, final_state: dict) -> InvestigationRe
             ungrounded_evidence=final_state["ungrounded_evidence"],
             risk_tier=final_state["risk_tier"],
             pending_approval=interrupts[0].value,
+            langfuse_trace_id=langfuse_trace_id,
         )
 
     return InvestigationResult(
@@ -124,6 +147,7 @@ def _result_from_state(scenario: Scenario, final_state: dict) -> InvestigationRe
         evidence_grounded=final_state["evidence_grounded"],
         ungrounded_evidence=final_state["ungrounded_evidence"],
         risk_tier=final_state["risk_tier"],
+        langfuse_trace_id=langfuse_trace_id,
         policy_verdict=final_state["policy_verdict"],
         remediation_result=final_state["remediation_result"],
         approval_decision=final_state["approval_decision"],
@@ -149,8 +173,11 @@ def run_investigation(
     # guard never fires first and produces a confusing error instead of our
     # own ceiling status.
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": deps.max_steps + 10}
-    final_state = compiled.invoke(initial_state(), config=config)
-    return _result_from_state(scenario, final_state)
+    with trace_investigation(
+        scenario_key=scenario.key, thread_id=thread_id, prompt_version=PROMPT_VERSION
+    ) as trace_id:
+        final_state = compiled.invoke(initial_state(), config=config)
+    return _result_from_state(scenario, final_state, langfuse_trace_id=trace_id)
 
 
 def resume_investigation(
@@ -177,5 +204,12 @@ def resume_investigation(
     deps = _build_deps(session, scenario, chat_fn, max_steps, max_cost_usd)
     compiled = build_graph(deps)
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": deps.max_steps + 10}
-    final_state = compiled.invoke(Command(resume=decision), config=config)
-    return _result_from_state(scenario, final_state)
+    # A resume gets its own trace rather than continuing the original one —
+    # it may run in an entirely different process, arbitrarily long after
+    # the pause. Both traces carry the same thread_id in their metadata, so
+    # a human can still find the pair by filtering on it in the Langfuse UI.
+    with trace_investigation(
+        scenario_key=scenario.key, thread_id=thread_id, prompt_version=PROMPT_VERSION
+    ) as trace_id:
+        final_state = compiled.invoke(Command(resume=decision), config=config)
+    return _result_from_state(scenario, final_state, langfuse_trace_id=trace_id)

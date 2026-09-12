@@ -26,6 +26,7 @@ from opspilot.agent.graph import resume_investigation, run_investigation
 from opspilot.agent.loop import get_chat_fn
 from opspilot.agent.remediation_tools import RollbackDeploymentArgs, ToggleFeatureFlagArgs
 from opspilot.agent.schemas import InvestigationResult
+from opspilot.agent.tracing import get_trace_url
 from opspilot.auth import require_api_key
 from opspilot.config import get_settings
 from opspilot.db import get_db
@@ -78,6 +79,8 @@ def _to_incident_detail(db: Session, incident: Incident) -> IncidentDetail:
         completed_at=incident.completed_at,
         pending_approval=incident.pending_approval,
         awaiting_since=incident.awaiting_since,
+        langfuse_trace_id=incident.langfuse_trace_id,
+        langfuse_trace_url=get_trace_url(incident.langfuse_trace_id),
     )
 
 
@@ -113,6 +116,7 @@ def _apply_result(db: Session, incident: Incident, result: InvestigationResult) 
         incident.awaiting_since = now
         incident.steps_used = result.steps_used
         incident.estimated_cost_usd = result.estimated_cost_usd
+        incident.langfuse_trace_id = result.langfuse_trace_id
         db.add(
             AuditLogEntry(
                 incident_id=incident.id,
@@ -150,6 +154,7 @@ def _apply_result(db: Session, incident: Incident, result: InvestigationResult) 
     incident.completed_at = now
     incident.pending_approval = None
     incident.awaiting_since = None
+    incident.langfuse_trace_id = result.langfuse_trace_id
     db.commit()
 
 

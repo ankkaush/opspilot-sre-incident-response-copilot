@@ -38,6 +38,14 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
       <p className="muted">
         Scenario: {incident.scenario_key} ·{" "}
         <span className={`status status-${incident.status}`}>{incident.status}</span>
+        {incident.langfuse_trace_url && (
+          <>
+            {" · "}
+            <a href={incident.langfuse_trace_url} target="_blank" rel="noreferrer">
+              View trace
+            </a>
+          </>
+        )}
       </p>
 
       <h2>Graph state</h2>

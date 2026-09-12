@@ -38,6 +38,7 @@ from opspilot.agent.support import (
     truncate_tool_result,
 )
 from opspilot.agent.tools import TOOL_REGISTRY, ToolContext, anthropic_tool_definitions
+from opspilot.agent.tracing import to_jsonable, trace_generation, trace_tool_call
 from opspilot.config import get_settings
 
 log = logging.getLogger("opspilot.agent")
@@ -90,26 +91,42 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
     settings = get_settings()
     step = state["steps_used"] + 1
 
-    try:
-        response = call_with_retries(
-            deps.chat_fn, messages=state["messages"], tools=_TOOLS, system=system_prompt(deps.scenario)
-        )
-    except TransientProviderError as exc:
-        # Bounded retry already happened inside call_with_retries and still
-        # failed — this is the graceful give-up, not a crash: a defined
-        # terminal state (route_after_gather_context sends this straight to
-        # decide), not an unhandled exception bubbling out of the graph.
-        log.error(
-            "model call failed after exhausting retries — giving up gracefully",
-            extra={"extra_fields": {"scenario_key": deps.scenario.key, "step": step, "error": str(exc)}},
-        )
-        return {"steps_used": step, "provider_error": str(exc)}
+    with trace_generation(
+        model=settings.anthropic_model, messages=to_jsonable(state["messages"]), tool_count=len(_TOOLS)
+    ) as generation:
+        try:
+            response = call_with_retries(
+                deps.chat_fn,
+                messages=state["messages"],
+                tools=_TOOLS,
+                system=system_prompt(deps.scenario),
+            )
+        except TransientProviderError as exc:
+            # Bounded retry already happened inside call_with_retries and
+            # still failed — this is the graceful give-up, not a crash: a
+            # defined terminal state (route_after_gather_context sends this
+            # straight to decide), not an unhandled exception bubbling out
+            # of the graph.
+            generation.update(level="ERROR", status_message=str(exc))
+            log.error(
+                "model call failed after exhausting retries — giving up gracefully",
+                extra={
+                    "extra_fields": {"scenario_key": deps.scenario.key, "step": step, "error": str(exc)}
+                },
+            )
+            return {"steps_used": step, "provider_error": str(exc)}
 
-    cost = state["estimated_cost_usd"] + estimate_cost_usd(
-        settings.anthropic_model, response.input_tokens, response.output_tokens
-    )
-    input_tokens = state["total_input_tokens"] + response.input_tokens
-    output_tokens = state["total_output_tokens"] + response.output_tokens
+        call_cost = estimate_cost_usd(
+            settings.anthropic_model, response.input_tokens, response.output_tokens
+        )
+        cost = state["estimated_cost_usd"] + call_cost
+        input_tokens = state["total_input_tokens"] + response.input_tokens
+        output_tokens = state["total_output_tokens"] + response.output_tokens
+        generation.update(
+            output=to_jsonable(content_blocks_to_dicts(response.content)),
+            usage_details={"input": response.input_tokens, "output": response.output_tokens},
+            cost_details={"total": call_cost},
+        )
 
     new_messages: list[dict] = [
         {"role": "assistant", "content": content_blocks_to_dicts(response.content)}
@@ -137,46 +154,54 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
     diagnosis: SubmitDiagnosisArgs | None = None
 
     for block in tool_use_blocks:
-        if block.name == "submit_diagnosis":
-            try:
-                diagnosis = SubmitDiagnosisArgs.model_validate(block.input)
-            except ValidationError as exc:
-                error_text = f"Invalid diagnosis: {exc}"
+        with trace_tool_call(tool_name=block.name, arguments=to_jsonable(block.input)) as tool_span:
+            if block.name == "submit_diagnosis":
+                try:
+                    diagnosis = SubmitDiagnosisArgs.model_validate(block.input)
+                except ValidationError as exc:
+                    error_text = f"Invalid diagnosis: {exc}"
+                    tool_span.update(level="ERROR", status_message=error_text)
+                    tool_results.append(_tool_result(block.id, error_text, is_error=True))
+                    new_evidence.append(
+                        ToolCallRecord(
+                            step=step, tool_name=block.name, arguments=block.input, error=error_text
+                        )
+                    )
+                    continue
+                tool_span.update(output=to_jsonable(diagnosis))
+                new_evidence.append(
+                    ToolCallRecord(
+                        step=step, tool_name=block.name, arguments=block.input, result=diagnosis.model_dump()
+                    )
+                )
+                tool_results.append(_tool_result(block.id, "Diagnosis received."))
+                continue
+
+            spec = TOOL_REGISTRY.get(block.name)
+            if spec is None:
+                error_text = f"Unknown tool '{block.name}'."
+                tool_span.update(level="ERROR", status_message=error_text)
                 tool_results.append(_tool_result(block.id, error_text, is_error=True))
                 new_evidence.append(
                     ToolCallRecord(step=step, tool_name=block.name, arguments=block.input, error=error_text)
                 )
                 continue
-            new_evidence.append(
-                ToolCallRecord(
-                    step=step, tool_name=block.name, arguments=block.input, result=diagnosis.model_dump()
+
+            try:
+                validated_args = spec.args_model.model_validate(block.input)
+            except ValidationError as exc:
+                error_text = f"Invalid arguments: {exc}"
+                tool_span.update(level="ERROR", status_message=error_text)
+                tool_results.append(_tool_result(block.id, error_text, is_error=True))
+                new_evidence.append(
+                    ToolCallRecord(step=step, tool_name=block.name, arguments=block.input, error=error_text)
                 )
-            )
-            tool_results.append(_tool_result(block.id, "Diagnosis received."))
-            continue
+                continue
 
-        spec = TOOL_REGISTRY.get(block.name)
-        if spec is None:
-            error_text = f"Unknown tool '{block.name}'."
-            tool_results.append(_tool_result(block.id, error_text, is_error=True))
-            new_evidence.append(
-                ToolCallRecord(step=step, tool_name=block.name, arguments=block.input, error=error_text)
-            )
-            continue
-
-        try:
-            validated_args = spec.args_model.model_validate(block.input)
-        except ValidationError as exc:
-            error_text = f"Invalid arguments: {exc}"
-            tool_results.append(_tool_result(block.id, error_text, is_error=True))
-            new_evidence.append(
-                ToolCallRecord(step=step, tool_name=block.name, arguments=block.input, error=error_text)
-            )
-            continue
-
-        result = spec.handler(ctx, validated_args)
-        safe_result = truncate_tool_result(result)
-        tool_results.append(_tool_result(block.id, json.dumps(safe_result, default=str)))
+            result = spec.handler(ctx, validated_args)
+            safe_result = truncate_tool_result(result)
+            tool_span.update(output=to_jsonable(safe_result))
+            tool_results.append(_tool_result(block.id, json.dumps(safe_result, default=str)))
         new_evidence.append(
             ToolCallRecord(
                 step=step,

@@ -255,3 +255,27 @@ pre {
   margin: 0;
   padding-left: 20px;
 }
+
+table.scorecard td {
+  font-size: 13px;
+}
+
+table.scorecard td:nth-child(odd) {
+  color: var(--muted);
+  width: 30%;
+}
+
+table.scorecard td:nth-child(even) {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pass {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.fail {
+  color: var(--danger);
+  font-weight: 600;
+}

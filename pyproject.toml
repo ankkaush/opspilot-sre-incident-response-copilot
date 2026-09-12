@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "anthropic>=0.40",
     "langgraph>=1.2",
+    "langfuse>=4.0",
 ]
 
 [project.optional-dependencies]

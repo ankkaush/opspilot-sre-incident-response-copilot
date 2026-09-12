@@ -99,3 +99,9 @@ class InvestigationResult(BaseModel):
     # path) ultimately decided, once resolved.
     pending_approval: dict | None = None
     approval_decision: dict | None = None
+
+    # v0.3 Phase 3 — set from opspilot.agent.tracing.trace_investigation's
+    # yielded trace id. None whenever Langfuse isn't configured; never
+    # raises either way, since tracing must never affect whether an
+    # investigation itself succeeds.
+    langfuse_trace_id: str | None = None

@@ -31,6 +31,12 @@ class ScenarioEvalResult(BaseModel):
     deterministic: DeterministicScores
     judge: JudgeScores | None = None
     judge_error: str | None = None
+    # v0.3 Phase 3 — the Langfuse trace for this specific scenario's run,
+    # linked by id: exactly what "any eval run's score can be traced back
+    # to the exact prompt version, tool calls, and reasoning" means in
+    # practice, satisfied by carrying the same id investigate() already
+    # returns straight through to here.
+    langfuse_trace_id: str | None = None
 
 
 class AggregateScores(BaseModel):
@@ -134,6 +140,7 @@ def run_scenario(
         deterministic=deterministic,
         judge=judge,
         judge_error=judge_error,
+        langfuse_trace_id=result.langfuse_trace_id,
     )
 
 

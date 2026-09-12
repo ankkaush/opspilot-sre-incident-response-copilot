@@ -64,6 +64,8 @@ export type Incident = {
   completed_at: string | null;
   pending_approval: PendingApproval | null;
   awaiting_since: string | null;
+  langfuse_trace_id: string | null;
+  langfuse_trace_url: string | null;
 };
 
 export type TimelineEntry = {
@@ -116,6 +118,80 @@ export function currentGraphNode(status: string): (typeof GRAPH_NODES)[number] |
   }
 }
 
+export type DeterministicScores = {
+  reached_diagnosis: boolean;
+  policy_verdict_correct: boolean | null;
+  recommended_action_exact_match: boolean | null;
+  evidence_grounded_heuristic: boolean | null;
+  tool_selection_score: number;
+  unnecessary_tool_call_count: number;
+  argument_error_count: number;
+  steps_used: number;
+  estimated_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  latency_seconds: number;
+};
+
+export type JudgeScores = {
+  diagnosis_accuracy: number;
+  diagnosis_accuracy_reasoning: string;
+  evidence_groundedness: number;
+  evidence_groundedness_reasoning: string;
+  remediation_quality: number;
+  remediation_quality_reasoning: string;
+  escalation_correct: boolean;
+  escalation_reasoning: string;
+};
+
+export type EvalScenarioResult = {
+  scenario_key: string;
+  status: string;
+  deterministic: DeterministicScores;
+  judge: JudgeScores | null;
+  judge_error: string | null;
+  langfuse_trace_id: string | null;
+  langfuse_trace_url: string | null;
+};
+
+export type AggregateScores = {
+  scenario_count: number;
+  completion_rate: number;
+  policy_verdict_accuracy: number;
+  recommended_action_exact_match_rate: number;
+  mean_tool_selection_score: number;
+  total_unnecessary_tool_calls: number;
+  total_argument_errors: number;
+  mean_diagnosis_accuracy: number | null;
+  mean_evidence_groundedness: number | null;
+  mean_remediation_quality: number | null;
+  escalation_correctness_rate: number | null;
+  mean_steps_used: number;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  mean_latency_seconds: number;
+};
+
+export type EvalRunSummary = {
+  run_label: string;
+  started_at: string;
+  scenario_count: number;
+  completion_rate: number;
+  policy_verdict_accuracy: number;
+  mean_diagnosis_accuracy: number | null;
+  total_cost_usd: number;
+  mean_latency_seconds: number;
+};
+
+export type EvalRun = {
+  run_label: string;
+  started_at: string;
+  scenario_keys: string[];
+  scenarios: EvalScenarioResult[];
+  aggregate: AggregateScores;
+};
+
 export const api = {
   listScenarios: () => apiFetch<Scenario[]>("/api/v1/scenarios"),
   listIncidents: () => apiFetch<Incident[]>("/api/v1/incidents"),
@@ -136,4 +212,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(decision),
     }),
+  listEvalRuns: () => apiFetch<EvalRunSummary[]>("/api/v1/eval-runs"),
+  getEvalRun: (label: string) => apiFetch<EvalRun>(`/api/v1/eval-runs/${label}`),
 };

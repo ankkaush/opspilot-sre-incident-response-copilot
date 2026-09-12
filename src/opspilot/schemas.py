@@ -3,6 +3,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from opspilot.eval.deterministic import DeterministicScores
+from opspilot.eval.judge import JudgeScores
+from opspilot.eval.runner import AggregateScores
+
 
 class ServiceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -75,6 +79,12 @@ class IncidentDetail(IncidentSummary):
     # anchors the SLA-timeout check.
     pending_approval: dict | None = None
     awaiting_since: dt.datetime | None = None
+    # v0.3 Phase 3 — the trace id from this incident's most recent run/resume
+    # call, and the ready-to-click Langfuse URL for it (None whenever
+    # tracing isn't configured; never required for the incident itself to
+    # have run correctly).
+    langfuse_trace_id: str | None = None
+    langfuse_trace_url: str | None = None
 
 
 class ApprovalDecision(BaseModel):
@@ -109,3 +119,37 @@ class TimelineEntry(BaseModel):
 class TimelineResponse(BaseModel):
     incident_id: int
     entries: list[TimelineEntry]
+
+
+# v0.3 Phase 3 — the agent dashboard's data: eval runs, read from
+# opspilot.eval.storage's on-disk JSON files (not a DB table), with a
+# ready-to-click Langfuse trace URL attached per scenario.
+
+
+class EvalRunSummary(BaseModel):
+    run_label: str
+    started_at: dt.datetime
+    scenario_count: int
+    completion_rate: float
+    policy_verdict_accuracy: float
+    mean_diagnosis_accuracy: float | None
+    total_cost_usd: float
+    mean_latency_seconds: float
+
+
+class EvalScenarioResultOut(BaseModel):
+    scenario_key: str
+    status: str
+    deterministic: DeterministicScores
+    judge: JudgeScores | None = None
+    judge_error: str | None = None
+    langfuse_trace_id: str | None = None
+    langfuse_trace_url: str | None = None
+
+
+class EvalRunOut(BaseModel):
+    run_label: str
+    started_at: dt.datetime
+    scenario_keys: list[str]
+    scenarios: list[EvalScenarioResultOut]
+    aggregate: AggregateScores
