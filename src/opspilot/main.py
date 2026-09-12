@@ -7,7 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from opspilot.config import get_settings
 from opspilot.logging_config import configure_logging
-from opspilot.routers import eval_runs, incidents, inspect
+from opspilot.routers import eval_runs, incidents, inspect, memory
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -49,6 +49,7 @@ app.add_middleware(MaxBodySizeMiddleware)
 app.include_router(inspect.router)
 app.include_router(incidents.router)
 app.include_router(eval_runs.router)
+app.include_router(memory.router)
 
 
 @app.exception_handler(Exception)

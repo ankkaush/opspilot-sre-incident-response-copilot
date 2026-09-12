@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.3 Phase 3 — Observability. v0.1 and v0.2 are complete and frozen; v0.3 Phase 1 built the 17-scenario golden dataset, Phase 2 built the harness that runs the agent against it and scores the result, and this phase wires Langfuse tracing through every node/model-call/tool-call and adds an agent-facing eval dashboard so a score can be traced back to the exact prompt version, tool calls, and reasoning that produced it.
+**Status:** v0.4 Phase 1 — Memory schema & write policy. v0.1–v0.3 are complete and frozen. v0.4 gives the agent service-scoped memory of confirmed root causes and fixes, written at incident close and retrieved during investigation — this phase builds the schema and the write path; Phase 2 wires retrieval into `gather_context` and measures its impact with the v0.3 eval harness.
 
 ## What exists right now
 
@@ -161,6 +161,26 @@ into this repo).
   trace" link straight into the corresponding Langfuse trace — the
   drill-through from score to reasoning the blueprint's "done when" for
   this phase asks for.
+- **Service-scoped memory of confirmed diagnoses** (`opspilot.memory`,
+  `service_memory` table) — the start of v0.4. Every incident close runs
+  through one write-policy gate (`write_confirmed_memory`): a memory row is
+  written only for a confirmed diagnosis (never for `recommended_action ==
+  "escalate"`, the model's own "I'm not confident enough" signal) at or
+  above a configurable confidence floor (`MEMORY_WRITE_MIN_CONFIDENCE`,
+  default 0.6) — never from raw model chatter, only from the structured
+  `SubmitDiagnosisArgs`/`InvestigationResult` objects. `outcome` is derived
+  from the policy verdict and (if any) approval decision, never from what
+  the model claims happened. A same-service consolidation pass
+  (`consolidate_service_memory`) merges exact-duplicate patterns (same
+  symptom evidence, same fix) into one row with a growing
+  `occurrence_count`, rather than letting repeat confirmations pile up.
+  Every read is scoped by `service_id` — there is no function in
+  `opspilot.memory` that can return another service's rows (proven
+  adversarially in `tests/test_memory.py`). A minimal admin endpoint
+  (`DELETE /api/v1/memory/{id}`) lets a wrong entry be removed. Not yet
+  wired into `gather_context` or the dashboard — that's Phase 2, once the
+  v0.3 eval harness can prove retrieval actually helps rather than just
+  existing.
 
 ## Running an investigation
 
@@ -336,6 +356,9 @@ src/opspilot/
                        tool-call context managers, trace URL lookup
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
   routers/eval_runs.py Read-only API over eval_runs/*.json for the dashboard
+  memory.py             Service-scoped memory: write policy, consolidation,
+                        scoped retrieval (opspilot.memory)
+  routers/memory.py     Admin correction endpoint (DELETE /api/v1/memory/{id})
   eval/deterministic.py Code-only scoring: policy/action match, tool
                        selection, errors, cost, tokens, latency
   eval/judge.py        LLM-as-judge: diagnosis accuracy, evidence
@@ -359,7 +382,9 @@ tests/                 Auth, migration round-trip, seed determinism +
                        harness tests (deterministic scoring, judge parsing,
                        full runner, regression detection, storage), tracing
                        tests (redaction, serialization, no-op-when-
-                       unconfigured behavior)
+                       unconfigured behavior), service-memory tests
+                       (write-policy gate, outcome derivation, consolidation,
+                       cross-service isolation, admin correction endpoint)
 web/                   Next.js dashboard (incident list, pending-approvals
                        queue, graph-state view, approval form, timeline,
                        eval run list + per-run scorecard with trace links)

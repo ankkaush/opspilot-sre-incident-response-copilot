@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_base_url: str = "https://cloud.langfuse.com"
 
+    # v0.4 Phase 1: the write-policy confidence floor. A confirmed diagnosis
+    # below this never becomes a service_memory row — see
+    # opspilot.memory.write_confirmed_memory. Deliberately code-enforced,
+    # not a prompt instruction the model could ignore or talk around.
+    memory_write_min_confidence: float = 0.6
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

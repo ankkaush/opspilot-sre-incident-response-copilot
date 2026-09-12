@@ -166,6 +166,39 @@ class Incident(Base):
     )
 
 
+class ServiceMemory(Base):
+    """Confirmed, structured facts about a service's past incidents —
+    long-term, cross-incident memory (v0.4 Phase 1), distinct from the
+    within-run state LangGraph already carries.
+
+    Written only at incident close, only from the structured diagnosis
+    object, and only when the write-policy gate in `opspilot.memory`
+    (confidence floor, never for an 'escalate' recommendation) passes —
+    never directly from raw model chatter. `occurrence_count` starts at 1
+    and grows as `opspilot.memory.consolidate_service_memory` merges
+    near-duplicate rows (same service, same symptom pattern, same fix) into
+    one, rather than letting confirmations of the same pattern pile up.
+    """
+
+    __tablename__ = "service_memory"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), index=True)
+    source_incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"))
+    symptom_pattern: Mapped[str] = mapped_column(Text)
+    root_cause: Mapped[str] = mapped_column(Text)
+    fix_applied: Mapped[str] = mapped_column(String(32))
+    # executed | approved_and_executed | denied | blocked — derived from the
+    # policy verdict and (if any) the approval decision, never from the
+    # model's own account of what happened. See opspilot.memory._derive_outcome.
+    outcome: Mapped[str] = mapped_column(String(32))
+    confidence: Mapped[float]
+    occurrence_count: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+
+    service: Mapped["Service"] = relationship()
+
+
 class AuditLogEntry(Base):
     """Append-only: one row per tool call (including submit_diagnosis) made
     during an Incident's investigation. Nothing ever updates or deletes a

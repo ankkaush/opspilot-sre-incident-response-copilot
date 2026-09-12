@@ -30,6 +30,7 @@ from opspilot.agent.tracing import get_trace_url
 from opspilot.auth import require_api_key
 from opspilot.config import get_settings
 from opspilot.db import get_db
+from opspilot.memory import consolidate_service_memory, write_confirmed_memory
 from opspilot.models import AuditLogEntry, Incident, Scenario
 from opspilot.schemas import (
     ApprovalDecision,
@@ -155,6 +156,17 @@ def _apply_result(db: Session, incident: Incident, result: InvestigationResult) 
     incident.pending_approval = None
     incident.awaiting_since = None
     incident.langfuse_trace_id = result.langfuse_trace_id
+
+    # v0.4 Phase 1 — the incident is closing; this is the one moment memory
+    # ever gets written (see opspilot.memory.write_confirmed_memory for the
+    # write-policy gate that decides whether anything actually lands).
+    scenario = db.query(Scenario).filter_by(id=incident.scenario_id).one()
+    written = write_confirmed_memory(
+        db, service_id=scenario.service_id, incident_id=incident.id, result=result
+    )
+    if written is not None:
+        consolidate_service_memory(db, scenario.service_id)
+
     db.commit()
 
 
