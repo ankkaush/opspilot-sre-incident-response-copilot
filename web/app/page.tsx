@@ -17,6 +17,8 @@ export default async function HomePage() {
       <h1>OpsPilot</h1>
       <p className="muted">
         SRE Incident Response Copilot — synthetic environment · <Link href="/eval">Eval runs</Link>
+        {" · "}
+        <Link href="/workflows">Durable workflows</Link>
         {" · Memory: "}
         {services.map((service, i) => (
           <span key={service.id}>

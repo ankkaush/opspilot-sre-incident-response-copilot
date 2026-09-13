@@ -32,6 +32,7 @@ from opspilot.config import get_settings
 from opspilot.db import get_db
 from opspilot.memory import consolidate_service_memory, write_confirmed_memory
 from opspilot.models import AuditLogEntry, Incident, Scenario
+from opspilot.process_identity import PROCESS_INSTANCE_ID
 from opspilot.schemas import (
     ApprovalDecision,
     IncidentCreate,
@@ -123,7 +124,11 @@ def _apply_result(db: Session, incident: Incident, result: InvestigationResult) 
                 incident_id=incident.id,
                 step=result.steps_used,
                 tool_name="approval_requested",
-                arguments=result.pending_approval or {},
+                # v0.5 Phase 3 — stamped so a later resume from a *different*
+                # process is a directly observable fact (see
+                # opspilot.process_identity), not something only a demo
+                # script's narration claims happened.
+                arguments={**(result.pending_approval or {}), "process_instance_id": PROCESS_INSTANCE_ID},
                 result=None,
                 error=None,
                 created_at=now,
@@ -141,7 +146,7 @@ def _apply_result(db: Session, incident: Incident, result: InvestigationResult) 
                 incident_id=incident.id,
                 step=result.steps_used,
                 tool_name="approval_decision",
-                arguments=result.approval_decision or {},
+                arguments={**(result.approval_decision or {}), "process_instance_id": PROCESS_INSTANCE_ID},
                 result=result.remediation_result,
                 error=None,
                 created_at=now,
@@ -346,6 +351,12 @@ def get_timeline(
         .order_by(AuditLogEntry.step, AuditLogEntry.id)
         .all()
     )
+    # v0.5 Phase 3 — the process_instance_id stamped on "approval_requested"
+    # (the pause) versus "approval_decision" (the resume): tracked across the
+    # loop so the decision row can compare against the request row that
+    # preceded it, since PROCESS_INSTANCE_ID isn't otherwise visible from
+    # the decision row alone.
+    pause_process_id: str | None = None
     for row in audit_rows:
         args = row.arguments or {}
         if row.tool_name == "submit_diagnosis":
@@ -354,6 +365,7 @@ def get_timeline(
         elif row.tool_name == "approval_requested":
             kind = "approval_requested"
             label = f"Approval requested for {args.get('action_type', 'an action')}"
+            pause_process_id = args.get("process_instance_id")
         elif row.tool_name == "approval_decision":
             kind = "approval_decided"
             if args.get("timed_out"):
@@ -368,6 +380,13 @@ def get_timeline(
             # re-executing, and flags it in remediation_result itself.
             if isinstance(row.result, dict) and row.result.get("deduplicated"):
                 label += " — remediation already executed once (crash-and-resume detected, not re-run)"
+            # v0.5 Phase 3 — a different process_instance_id between the
+            # pause and this decision is concrete evidence a process
+            # restart happened while this incident sat awaiting approval,
+            # made visible here rather than only inferable from logs.
+            resume_process_id = args.get("process_instance_id")
+            if pause_process_id is not None and resume_process_id != pause_process_id:
+                label += " — resumed after a process restart"
         else:
             kind = "evidence_gathered"
             label = f"Called {row.tool_name}" if row.error is None else f"Called {row.tool_name} — error"

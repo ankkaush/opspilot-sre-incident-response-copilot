@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.5 Phase 2 — Idempotency & crash recovery. v0.1–v0.4 are complete and frozen. Phase 1 made checkpointing durable across a process restart; this phase closes the gap durability alone doesn't: LangGraph's documented contract is that resuming past an `interrupt()` call re-enters the whole node function, so a crash between a human's approval and that node's own checkpoint being written can otherwise re-run the remediation call a second time. Every remediation action is now idempotency-keyed, and a detected duplicate is surfaced explicitly in the incident's audit trail — not silently absorbed. Phase 3 (hardening, v0.5.0 freeze) is next.
+**Status: v0.5.0 — frozen.** All five versions are complete: raw tool-calling agent → reliable/controlled agent → measurable agent → context-aware agent → durable agent. v0.5 Phase 3 makes the durability story visible (a "resumed after a process restart" signal in the audit trail, a durable-workflows dashboard view) and closes out the project as the baseline for a future multi-agent build. See [Project retrospective](#project-retrospective) at the bottom for the full arc and the decisions that shaped it.
 
 ## What exists right now
 
@@ -269,6 +269,20 @@ into this repo).
   itself needed no new work this phase: `interrupt()` was already a
   non-blocking, and (as of Phase 1) durable, wait — Phase 2's actual new
   contribution is the idempotency guarantee.
+- **A demonstrable "resumed after a process restart" signal** (`opspilot.
+  process_identity`) — v0.5 Phase 3. Phases 1 and 2 make durability *true*;
+  resuming looks identical whether the process actually restarted in
+  between or not, which is the whole point — but that leaves nothing for a
+  demo to point at. `PROCESS_INSTANCE_ID` is a random id generated once per
+  process lifetime, stamped onto the "approval requested" and "approval
+  decided" audit rows. Two different values on the same incident is
+  concrete, queryable evidence a restart happened in between, surfaced
+  directly in that incident's own timeline ("… — resumed after a process
+  restart"), not just narrated by a demo script.
+- **A durable-workflows dashboard view** (`/workflows`) — incidents
+  currently paused and waiting on a human, with live-computed elapsed wait
+  time, read back entirely from Postgres (nothing held in memory anywhere).
+  Linked from the home page.
 
 ## Running an investigation
 
@@ -456,6 +470,8 @@ src/opspilot/
   agent/idempotency.py  Idempotent remediation execution: deterministic
                        key + immediately-committed claim-or-return
                        (opspilot.agent.idempotency)
+  process_identity.py   Per-process random id, stamped onto approval audit
+                       rows to make a resumed-after-restart resume visible
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
   routers/eval_runs.py Read-only API over eval_runs/*.json for the dashboard
   memory.py             Service-scoped memory: write policy, consolidation,
@@ -490,10 +506,89 @@ tests/                 Auth, migration round-trip, seed determinism +
                        endpoints), the memory-impact eval-harness comparison
                        (test_memory_eval_impact.py), the checkpointer kill-
                        and-resume harness (test_checkpointer.py), the
-                       idempotency/crash-recovery tests (test_idempotency.py)
+                       idempotency/crash-recovery tests (test_idempotency.py),
+                       the resumed-after-restart timeline signal tests
 web/                   Next.js dashboard (incident list, pending-approvals
                        queue, graph-state view, approval form, timeline,
                        eval run list + per-run scorecard with trace links,
-                       per-service memory view with delete/correction)
+                       per-service memory view with delete/correction,
+                       durable-workflows view)
 eval_runs/             Eval results (gitignored — regenerable output)
 ```
+
+## Project retrospective
+
+v0.5.0 freezes this project as a portfolio piece and as the baseline for a
+future multi-agent build. Five versions, one rule threaded through all of
+them: **the LLM proposes, deterministic code decides.** The model interprets
+evidence, picks tools, forms a hypothesis, and recommends an action. It
+never decides for itself that an action is safe enough to run — that
+judgment is made once, in code, by a policy engine keyed only on
+`action_type`, never on diagnosis text or the model's own stated
+confidence. Nothing in five versions of scope growth ever bent that rule;
+each version's own tests include an adversarial case proving it (a
+maximally-confident, maximally-urgent diagnosis still gets `REQUIRE_APPROVAL`
+if that's what the action type maps to — see `tests/test_policy.py`).
+
+**The arc:**
+- **v0.1 — Raw Tool-Using Agent.** An explicit while-loop against the model
+  API, read-only tools only — not a limitation, a security property: with
+  no action to gate yet, there's nothing dangerous a misbehaving loop can
+  do. A hard step/cost ceiling, enforced by code, from day one.
+- **v0.2 — Reliable Agent.** The loop becomes a LangGraph state machine. A
+  deterministic policy engine gates every proposed action. Real
+  human-in-the-loop via `interrupt()`, with an in-memory checkpointer —
+  real pause/resume within one process, a restart loses it. That gap is
+  named explicitly at the time, not discovered later: v0.5's actual job,
+  stated in v0.2's own code comments before v0.3 or v0.4 existed.
+- **v0.3 — Measurable Agent.** A 17-scenario golden dataset with checkable
+  ground truth, a real evaluation harness (deterministic + LLM-as-judge,
+  never RAGAS — that library targets RAG pipelines, not tool-selection and
+  policy-compliance scoring), and full Langfuse tracing so a scorecard
+  change is traceable to the exact prompt version, tool calls, and
+  reasoning that produced it.
+- **v0.4 — Context-Aware Agent.** Service-scoped memory of confirmed
+  diagnoses, written only from structured output under a write-policy gate
+  (never raw model chatter, never an unconfirmed or low-confidence
+  diagnosis), retrieved as clearly-labeled advisory context with an
+  explicit contamination guardrail (current evidence always outranks
+  memory on contradiction). Its impact is measured, not assumed: a
+  repeat-pattern eval scenario shows `mean_steps_used` drop from 5 to 2
+  with memory enabled, reproducibly, at zero live cost.
+- **v0.5 — Durable Agent.** The in-memory checkpointer named as a gap back
+  in v0.2 becomes a Postgres-backed one — proven via a kill-and-resume
+  harness at every node boundary, not just claimed. Durability alone
+  creates a new, subtler failure mode (LangGraph re-entering a node from
+  the top on resume can replay an already-executed remediation call), so
+  every remediation action becomes idempotency-keyed. The last phase makes
+  both properties demonstrable rather than merely true: a process-restart
+  signal in the audit trail, a durable-workflows dashboard view.
+
+**Decisions that shaped it**, in case the reasoning is useful for the next
+project: no Redis/Celery/queue at any version — LangGraph's own Postgres
+checkpointer covers durability at this scale, and a queue would be
+technology added for the resume rather than a real need. pgvector deferred
+at v0.4 rather than adopted speculatively — keyword/exact-match retrieval
+is precise enough at this corpus size; add embeddings only once eval data
+shows under-retrieval, not in advance. Memory and authorization scoped by
+*service*, not tenant — there's no second customer org in this system to
+isolate from, and building multi-tenancy speculatively would be scope for
+its own sake. v0.4 Phase 2's blueprint mention of a "verifying recovery"
+async-wait node was deliberately not built — no spec beyond four words, not
+covered by that phase's own done-when criterion, and there's no
+post-remediation recovery-verification step anywhere in this codebase to
+make durable in the first place. Optional model tiering (cheap model for
+evidence-gathering, strong model for diagnosis) was flagged optional in the
+blueprint and never built — real, but not required for done, and the
+single-model design stayed simpler for it.
+
+**What a future multi-agent project inherits from this baseline:** a
+synthetic environment and scenario contract with real ground truth: an
+eval harness that scores tool selection, policy compliance, and diagnosis
+quality independent of any one agent's implementation; a policy-engine
+pattern (deterministic gate, keyed on action type, fails closed on
+anything unrecognized) that generalizes to more than one agent proposing
+actions; durable, idempotent execution that doesn't care how many agents
+are proposing work, only that each proposed action executes at most once;
+and full tracing wired through every model and tool call, ready to carry a
+per-agent dimension when there's more than one agent to distinguish.

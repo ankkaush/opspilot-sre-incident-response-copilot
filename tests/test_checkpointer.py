@@ -245,3 +245,60 @@ def test_production_approval_resume_survives_a_simulated_process_restart(client,
         stale_checkpointer.conn.close()
     finally:
         app.dependency_overrides.pop(get_chat_fn, None)
+
+
+def test_timeline_shows_resumed_after_process_restart(client, auth_headers, monkeypatch):
+    """v0.5 Phase 3's demonstrable "resumed after crash" timeline entry
+    (opspilot.process_identity): a paused incident whose eventual resume
+    carries a different PROCESS_INSTANCE_ID is concrete, queryable proof a
+    process restart happened in between — this monkeypatches that id to
+    simulate exactly that, the same way `cache_clear()` above simulates a
+    restarted checkpointer singleton."""
+    from opspilot.routers import incidents as incidents_module
+
+    app.dependency_overrides[get_chat_fn] = lambda: ScriptedChatFn(responses=list(HAPPY_PATH_SCRIPT))
+    monkeypatch.setattr(incidents_module, "PROCESS_INSTANCE_ID", "process-before-crash")
+    try:
+        incident_id = client.post(
+            "/api/v1/incidents", json={"scenario_key": "checkout-deploy-outage"}, headers=auth_headers
+        ).json()["id"]
+        client.post(f"/api/v1/incidents/{incident_id}/run", headers=auth_headers)
+
+        monkeypatch.setattr(incidents_module, "PROCESS_INSTANCE_ID", "process-after-restart")
+        approve_resp = client.post(
+            f"/api/v1/incidents/{incident_id}/approvals",
+            json={"approved": True, "actor": "alice", "params": {"target_version": "v2.7"}},
+            headers=auth_headers,
+        )
+        assert approve_resp.status_code == 200
+
+        timeline = client.get(
+            f"/api/v1/incidents/{incident_id}/timeline", headers=auth_headers
+        ).json()["entries"]
+        decided = next(e for e in timeline if e["kind"] == "approval_decided")
+        assert "resumed after a process restart" in decided["label"]
+    finally:
+        app.dependency_overrides.pop(get_chat_fn, None)
+
+
+def test_timeline_omits_restart_label_for_a_same_process_resume(client, auth_headers):
+    app.dependency_overrides[get_chat_fn] = lambda: ScriptedChatFn(responses=list(HAPPY_PATH_SCRIPT))
+    try:
+        incident_id = client.post(
+            "/api/v1/incidents", json={"scenario_key": "checkout-deploy-outage"}, headers=auth_headers
+        ).json()["id"]
+        client.post(f"/api/v1/incidents/{incident_id}/run", headers=auth_headers)
+        approve_resp = client.post(
+            f"/api/v1/incidents/{incident_id}/approvals",
+            json={"approved": True, "actor": "alice", "params": {"target_version": "v2.7"}},
+            headers=auth_headers,
+        )
+        assert approve_resp.status_code == 200
+
+        timeline = client.get(
+            f"/api/v1/incidents/{incident_id}/timeline", headers=auth_headers
+        ).json()["entries"]
+        decided = next(e for e in timeline if e["kind"] == "approval_decided")
+        assert "resumed after a process restart" not in decided["label"]
+    finally:
+        app.dependency_overrides.pop(get_chat_fn, None)
