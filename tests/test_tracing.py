@@ -1,13 +1,26 @@
 """Tracing tests run against the real Langfuse client, not a fake — and
-that's deliberate. The test environment never sets LANGFUSE_PUBLIC_KEY/
-LANGFUSE_SECRET_KEY, so every call here exercises the SDK's own no-op path
-(see the module docstring in opspilot.agent.tracing): if that path ever
-raised or silently changed agent behavior, these tests would catch it
-without needing a real Langfuse account.
+that's deliberate. Whether *this developer's* local `.env` happens to carry
+real Langfuse credentials or not, every call here must behave the same way,
+since a missing/present Langfuse account must never change agent behavior
+(see the module docstring in opspilot.agent.tracing) — only whether anyone
+can see it run.
+
+The redaction tests call `_redact` directly rather than going through
+`get_langfuse_client()._mask` — that private SDK attribute is only ever
+populated once the client has been constructed with real credentials, so
+asserting against it silently depended on whichever machine ran the suite
+happening to have LANGFUSE_PUBLIC_KEY/SECRET_KEY configured locally. `_redact`
+is the actual policy under test either way; testing it directly is what
+makes these tests genuinely environment-independent instead of accidentally
+passing in dev and failing in CI.
 """
 
+from langfuse import Langfuse
+
+from opspilot.agent import tracing as tracing_module
 from opspilot.agent.schemas import SubmitDiagnosisArgs
 from opspilot.agent.tracing import (
+    _redact,
     get_langfuse_client,
     get_trace_url,
     to_jsonable,
@@ -23,8 +36,7 @@ def test_get_langfuse_client_is_a_singleton():
 
 
 def test_redaction_masks_secret_shaped_keys():
-    client = get_langfuse_client()
-    masked = client._mask(
+    masked = _redact(
         data={"api_key": "sk-ant-should-not-appear", "note": "safe", "nested": {"password": "hunter2"}}
     )
     assert masked["api_key"] == "[REDACTED]"
@@ -33,8 +45,7 @@ def test_redaction_masks_secret_shaped_keys():
 
 
 def test_redaction_is_case_insensitive_on_keys():
-    client = get_langfuse_client()
-    masked = client._mask(data={"API_KEY": "should-be-redacted", "Authorization": "also-redacted"})
+    masked = _redact(data={"API_KEY": "should-be-redacted", "Authorization": "also-redacted"})
     assert masked["API_KEY"] == "[REDACTED]"
     assert masked["Authorization"] == "[REDACTED]"
 
@@ -84,3 +95,17 @@ def test_trace_tool_call_yields_without_raising():
 
 def test_get_trace_url_returns_none_for_none_input():
     assert get_trace_url(None) is None
+
+
+def test_get_trace_url_no_ops_when_langfuse_is_unconfigured(monkeypatch):
+    """A non-None trace_id does NOT imply Langfuse is configured —
+    OpenTelemetry assigns ids locally regardless of whether there's
+    anywhere to export them to (see get_trace_url's own docstring). This
+    is what actually exercises that path: an explicitly credential-less
+    client, independent of whatever this machine's own .env happens to
+    contain, so the test can't accidentally pass only because a real
+    account is configured locally."""
+    unconfigured_client = Langfuse(public_key=None, secret_key=None, host=None)
+    monkeypatch.setattr(tracing_module, "get_langfuse_client", lambda: unconfigured_client)
+
+    assert get_trace_url("some-trace-id-1234") is None

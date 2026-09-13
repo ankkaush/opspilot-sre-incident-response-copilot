@@ -76,9 +76,21 @@ def get_langfuse_client() -> Langfuse:
 
 
 def get_trace_url(trace_id: str | None) -> str | None:
+    """A non-None `trace_id` does NOT imply Langfuse is configured —
+    OpenTelemetry assigns span/trace ids locally regardless of whether
+    there's anywhere to export them to, so an incident can carry a real
+    trace_id even with no Langfuse account at all. Building the actual URL
+    does need real credentials (it calls Langfuse's API to resolve the
+    project id), so that call is wrapped: a Langfuse-side failure here must
+    only cost a "View trace" link, never break the incident/timeline
+    response it's embedded in — the same no-op-gracefully contract this
+    whole module promises."""
     if trace_id is None:
         return None
-    return get_langfuse_client().get_trace_url(trace_id=trace_id)
+    try:
+        return get_langfuse_client().get_trace_url(trace_id=trace_id)
+    except Exception:
+        return None
 
 
 @contextmanager
