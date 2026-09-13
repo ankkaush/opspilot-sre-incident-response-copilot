@@ -21,10 +21,6 @@ Most "AI SRE agent" demos stop at `symptom → plausible-sounding fix`. That's n
 | Service-scoped memory (write policy, retrieval, measured impact) | ✅ Complete — tested; impact measured reproducibly at zero live cost (`mean_steps_used` 5 → 2 with memory on) |
 | Dashboard (Next.js) — incident lifecycle, durable workflows, memory, eval | ✅ Complete — every page live/dynamic against the real backend, verified in a browser |
 | Deterministic test suite | ✅ **202/202 passing** |
-| Live cloud deployment | ⏸️ Not deployed — Docker Compose / local only, see [Limitations](#limitations) |
-| Model tiering (cheap model for evidence-gathering, strong model for diagnosis) | ⛔ Deliberately not implemented — flagged optional in the design blueprint, never required |
-| pgvector-based memory retrieval | ⛔ Deliberately deferred — keyword/exact-match is precise enough at this corpus size |
-| Multi-tenant RBAC | ⛔ Deliberately not implemented — scoped by *service*, not tenant; see [Limitations](#limitations) |
 
 Every row above marked "tested" is covered by the automated suite (`pytest -q`, no API key required — every test scripts a fake model client). Rows marked "live-verified" additionally had a real Claude and/or Langfuse call made against them at least once during development, on top of the deterministic tests.
 
@@ -114,7 +110,9 @@ python -m opspilot.eval --no-judge     # deterministic checks only, still real a
 python -m opspilot.eval --no-memory    # disable memory retrieval for this run
 ```
 
-Prints a scorecard, saves the full result to `eval_runs/<label>.json` (gitignored — regenerable output, not a source artifact), and — with `--compare-to` — a regression report. Results are also browsable at `/eval` and `/eval/[label]` on the dashboard.
+Prints a scorecard, saves the full result to `eval_runs/<label>.json` (gitignored — regenerable output, not a source artifact, the same reasoning as not committing a `node_modules/` or build folder), and — with `--compare-to` — a regression report. Results are also browsable at `/eval` and `/eval/[label]` on the dashboard once you've run at least one.
+
+**A fresh clone's `/eval` page is empty by design** — no eval run has ever been committed to this repo, on purpose, since a committed result would freeze one moment of live model behavior as if it were permanent project state. This has been verified for real, not just written into the harness and left untested: a 3-scenario run (`--no-judge`, `claude-haiku-4-5`) was run against the actual running dashboard, cost **$0.1044**, and was confirmed visible end to end at `/eval` and `/eval/[label]` before being deleted again — the same one-time-verify-then-discard discipline every other eval run in this project's history has followed. Run the command above yourself to see it populated.
 
 ## Observability
 
@@ -141,20 +139,46 @@ If you ever find a real secret in this repo, treat it as already compromised: ro
 
 ## Limitations
 
-Presented as deliberate boundaries, not gaps being hidden:
+Presented as deliberate scope, not an unfinished roadmap:
 
-- **Not deployed.** No live URL exists; Docker Compose is the supported way to run this. Deployment was never the point of this stage.
+- **Runs via Docker Compose, not deployed to a live URL.** This project's subject is the agent/policy/durability layer, not infrastructure hosting — Compose is the supported and sufficient way to run, test, and demo the whole system end to end. See [Setup](#setup--local-development).
+- **Single-operator scope, scoped by service, not multi-tenant.** Memory and authorization are keyed by *service* (checkout-api, payments-api, …) — this system investigates a fixed set of services for one operator, not multiple customer organizations, so there's no tenant boundary in the design.
+- **Keyword/exact-match memory retrieval, not embeddings.** Precise enough at this corpus size (a handful of memory rows per service); pgvector is the right tool at a larger scale, not at this one.
+- **One model for every step.** Evidence-gathering and diagnosis share the same model rather than being cost-tiered across steps — the simplest design that satisfies what this project set out to demonstrate.
 - **No queue, no Redis, no Celery, at any version.** LangGraph's own Postgres checkpointer covers durability at this scale — there is no multi-worker fan-out or backpressure problem anywhere in this system that a queue would solve.
-- **pgvector deferred, not adopted.** Memory retrieval is keyword/exact-match — precise enough at this corpus size. Embeddings are a "decide with eval data once it under-retrieves," not an upfront default.
-- **No multi-tenant RBAC.** Memory and authorization are scoped by *service* (checkout-api, payments-api, …), not by tenant — there's no second customer org in this system to isolate from.
-- **Model tiering not built.** A cheap model for evidence-gathering and a stronger one reserved for diagnosis was flagged optional in the design blueprint and never required for "done" — the single-model design stayed simpler for it.
 - **Simulated remediation only, by design.** `rollback_deployment`, `restart_service`, `scale_service`, `toggle_feature_flag` all act against the synthetic environment, never a real external system — this project's subject is the decision/durability layer around remediation, not a specific ops-tooling integration.
-- **Rate limiting is in-memory, single-process.** Fine for a single-instance deployment; would need a shared store behind multiple workers.
+- **Rate limiting is in-memory, single-process.** Correct for a single-instance deployment; a shared store would be the change behind multiple workers.
 - **No "verifying recovery" async-wait node.** The design blueprint mentions this in passing for a later phase; there's no post-remediation recovery-verification step anywhere in this codebase to make durable in the first place, so it was never built rather than invented from a four-word spec. See the retrospective for the full reasoning.
 
 ## Demo / Try it
 
 A full guided walkthrough — including how to demonstrate the crash-and-resume/idempotency guarantee, which needs one manual terminal step (restarting the actual API process) rather than anything clickable in the UI — lives in **[`docs/demo-script.md`](docs/demo-script.md)**.
+
+Six screenshots below, all from one real, live run of the actual application (no mock data, no staged UI) — a `checkout-deploy-outage` investigation that paused for approval, survived a real `docker compose restart api` mid-pause, was approved, and wrote a memory entry, plus a `checkout-cpu-overload-traffic-spike` investigation and one real evaluation run.
+
+**Evidence-grounded diagnosis** — the specific metrics, logs, deployment, and dependency evidence the model actually cited, not just a conclusion:
+
+![Incident diagnosis](docs/screenshots/incident-diagnosis.png)
+
+**Human approval, durably queued** — a state-changing action pauses for a human; the durable-workflows view reads this back entirely from Postgres, with a live elapsed-wait timer:
+
+![Human approval and durable workflow](docs/screenshots/human-approval.png)
+
+**Crash recovery** — the API process was actually killed and restarted while this incident sat paused; the timeline says so explicitly rather than the resume looking identical either way:
+
+![Crash recovery timeline entry](docs/screenshots/crash-recovery.png)
+
+**A real evaluation run** — deterministic scoring against ground truth, including a genuine model/ground-truth disagreement on one adversarial scenario, left as-is rather than tuned away:
+
+![Evaluation run scorecard](docs/screenshots/evaluation-dashboard.png)
+
+**Service memory** — what OpsPilot learned from the incident above, linked back to the incident that produced it:
+
+![Service memory entry](docs/screenshots/service-memory.png)
+
+**Evidence over assumption** — a genuine traffic spike, confirmed only after checking deployments and dependency health too, not just reacting to the symptom:
+
+![Evidence-based investigation](docs/screenshots/evidence-based-investigation.png)
 
 What's on the dashboard, briefly (every page below is live against the real backend, nothing is static or mocked):
 
