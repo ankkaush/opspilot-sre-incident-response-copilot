@@ -1,0 +1,45 @@
+# Defensive hardening, not a fix for a known issue: the Dockerfile only ever
+# COPYs explicit paths (pyproject.toml, src, alembic, alembic.ini,
+# docker-entrypoint.sh), never `COPY . .`, so none of this can currently
+# reach a built image. This file exists so a future change to the
+# Dockerfile — someone reaching for `COPY . .` for convenience — can't
+# silently bake any of the following into an image.
+
+# Secrets — never allowed in an image regardless of how it's built.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Next.js (the dashboard isn't part of this image at all)
+node_modules/
+.next/
+next-env.d.ts
+
+# OS / editor cruft
+.DS_Store
+
+# Build output
+dist/
+build/
+
+# Regenerable eval output — never a source artifact, never image content
+eval_runs/
+
+# Anthropic/Claude Code project metadata — not application content
+.claude/
