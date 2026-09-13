@@ -46,6 +46,7 @@ from opspilot.agent.state import GraphState, NodeDeps, initial_state
 from opspilot.agent.support import PROMPT_VERSION
 from opspilot.agent.tracing import to_jsonable, trace_investigation, trace_node
 from opspilot.config import get_settings
+from opspilot.memory import format_memory_for_prompt, retrieve_relevant_memory
 from opspilot.models import Scenario
 
 _CHECKPOINTER = InMemorySaver()
@@ -98,14 +99,25 @@ def _build_deps(
     chat_fn: ChatFn,
     max_steps: int | None,
     max_cost_usd: float | None,
+    *,
+    memory_enabled: bool = True,
 ) -> NodeDeps:
     settings = get_settings()
+    # v0.4 Phase 2 — retrieved once per investigation, not per gather_context
+    # iteration. memory_enabled=False is the eval harness's on/off lever for
+    # measuring retrieval's actual impact (opspilot.eval.runner); real
+    # incidents always leave it at the default.
+    memory_context = ""
+    if memory_enabled:
+        memory_rows = retrieve_relevant_memory(session, scenario.service_id)
+        memory_context = format_memory_for_prompt(memory_rows)
     return NodeDeps(
         session=session,
         scenario=scenario,
         chat_fn=chat_fn,
         max_steps=max_steps if max_steps is not None else settings.agent_max_steps,
         max_cost_usd=max_cost_usd if max_cost_usd is not None else settings.agent_max_cost_usd,
+        memory_context=memory_context,
     )
 
 
@@ -162,8 +174,11 @@ def run_investigation(
     thread_id: str,
     max_steps: int | None = None,
     max_cost_usd: float | None = None,
+    memory_enabled: bool = True,
 ) -> InvestigationResult:
-    deps = _build_deps(session, scenario, chat_fn, max_steps, max_cost_usd)
+    deps = _build_deps(
+        session, scenario, chat_fn, max_steps, max_cost_usd, memory_enabled=memory_enabled
+    )
     compiled = build_graph(deps)
 
     # Generous margin over max_steps: the self-loop accounts for at most
@@ -189,6 +204,7 @@ def resume_investigation(
     decision: dict,
     max_steps: int | None = None,
     max_cost_usd: float | None = None,
+    memory_enabled: bool = True,
 ) -> InvestigationResult:
     """Resumes a paused investigation with a human's (or the SLA-timeout
     path's) decision. `decision` becomes evaluate_policy's `interrupt()`
@@ -200,8 +216,14 @@ def resume_investigation(
     the time a human actually responds. Only `_CHECKPOINTER` and
     `thread_id` need to be the same — LangGraph resumes from the persisted
     state, not from the old Python objects.
+
+    `memory_context` on this fresh NodeDeps would never actually be read —
+    a resume re-enters at evaluate_policy, not gather_context — so
+    retrieval is always skipped here regardless of `memory_enabled`; the
+    parameter exists only to keep this function's signature symmetric with
+    run_investigation's.
     """
-    deps = _build_deps(session, scenario, chat_fn, max_steps, max_cost_usd)
+    deps = _build_deps(session, scenario, chat_fn, max_steps, max_cost_usd, memory_enabled=False)
     compiled = build_graph(deps)
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": deps.max_steps + 10}
     # A resume gets its own trace rather than continuing the original one —

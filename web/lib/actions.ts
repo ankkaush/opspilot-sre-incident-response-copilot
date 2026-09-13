@@ -50,3 +50,15 @@ export async function decideApproval(formData: FormData) {
   revalidatePath(`/incidents/${incidentId}`);
   revalidatePath("/");
 }
+
+export async function deleteMemoryEntry(formData: FormData) {
+  const memoryId = Number(formData.get("memory_id"));
+  const serviceName = formData.get("service_name");
+  if (!Number.isFinite(memoryId) || typeof serviceName !== "string") {
+    throw new Error("memory_id and service_name are required.");
+  }
+
+  await api.deleteMemoryEntry(memoryId);
+
+  revalidatePath(`/services/${serviceName}/memory`);
+}

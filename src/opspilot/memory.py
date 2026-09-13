@@ -12,9 +12,12 @@ Two disciplines this module exists to enforce in code, not in a prompt:
    that's what makes the cross-service isolation test in
    tests/test_memory.py a structural guarantee, not a hopeful one.
 
-Retrieval into `gather_context` and the per-service dashboard view are
-v0.4 Phase 2's job — this phase only builds the schema, the write path, and
-consolidation.
+Retrieval (v0.4 Phase 2) adds a third discipline, the contamination
+guardrail: `retrieve_relevant_memory`/`format_memory_for_prompt` surface
+prior incidents to the model as clearly-labeled advisory context, never as
+something that can override contradicting current evidence. See
+`format_memory_for_prompt`'s docstring for the exact framing, and
+`opspilot.agent.support.system_prompt` for where it lands.
 """
 
 import datetime as dt
@@ -27,6 +30,11 @@ from opspilot.config import get_settings
 from opspilot.models import ServiceMemory
 
 log = logging.getLogger("opspilot.memory")
+
+# How many prior incidents get surfaced to the model per investigation. Kept
+# small and deliberately not a full corpus dump — this is a hint, not a
+# knowledge base the model is expected to search.
+MEMORY_CONTEXT_LIMIT = 3
 
 
 def _derive_outcome(result: InvestigationResult) -> str:
@@ -102,6 +110,56 @@ def list_service_memory(db: Session, service_id: int) -> list[ServiceMemory]:
         .order_by(ServiceMemory.created_at.desc())
         .all()
     )
+
+
+def retrieve_relevant_memory(
+    db: Session, service_id: int, *, limit: int = MEMORY_CONTEXT_LIMIT
+) -> list[ServiceMemory]:
+    """The read side of retrieval: the rows most worth surfacing for this
+    service, ranked by how many times a pattern has been confirmed, then
+    confidence, then recency. Exact/keyword ranking is deliberate, not a
+    placeholder — add embeddings only once eval data shows this actually
+    under-retrieves at a larger corpus size, not in advance (see
+    consolidate_service_memory's docstring for the same pgvector-deferral
+    reasoning). Scoped by service_id like every other read in this module."""
+    return (
+        db.query(ServiceMemory)
+        .filter_by(service_id=service_id)
+        .order_by(
+            ServiceMemory.occurrence_count.desc(),
+            ServiceMemory.confidence.desc(),
+            ServiceMemory.created_at.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+
+def format_memory_for_prompt(rows: list[ServiceMemory]) -> str:
+    """Renders retrieved memory as a labeled, advisory block for the system
+    prompt — the contamination guardrail in text form. This is deliberately
+    explicit rather than trusting the model to infer the right weight to
+    give old data: prior incidents can *suggest* a hypothesis, they can
+    never outrank what the current investigation's tools actually show.
+    Returns "" (nothing to append) when there's no memory to surface."""
+    if not rows:
+        return ""
+    lines = [
+        "Prior related incidents for this service (advisory only, from past "
+        "confirmed diagnoses — NOT current evidence). These may suggest a "
+        "hypothesis worth checking first, but if what you actually observe "
+        "in this incident's metrics, logs, deployments, or dependency "
+        "status contradicts one of these, trust the current evidence, not "
+        "this list:"
+    ]
+    for row in rows:
+        lines.append(
+            f"- Symptom pattern: {row.symptom_pattern}\n"
+            f"  Root cause: {row.root_cause}\n"
+            f"  Fix applied: {row.fix_applied} (outcome: {row.outcome})\n"
+            f"  Confirmed {row.occurrence_count}x, confidence {row.confidence:.2f}"
+        )
+    return "\n".join(lines)
 
 
 def consolidate_service_memory(db: Session, service_id: int) -> int:

@@ -99,7 +99,7 @@ def gather_context(state: GraphState, *, deps: NodeDeps) -> dict:
                 deps.chat_fn,
                 messages=state["messages"],
                 tools=_TOOLS,
-                system=system_prompt(deps.scenario),
+                system=system_prompt(deps.scenario, deps.memory_context),
             )
         except TransientProviderError as exc:
             # Bounded retry already happened inside call_with_retries and

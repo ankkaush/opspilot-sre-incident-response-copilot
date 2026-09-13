@@ -79,3 +79,10 @@ class NodeDeps:
     chat_fn: ChatFn
     max_steps: int
     max_cost_usd: float
+    # v0.4 Phase 2 — pre-formatted "prior related incidents" text (see
+    # opspilot.memory.format_memory_for_prompt), computed once per
+    # investigation rather than re-queried on every gather_context
+    # self-loop iteration. "" when there's nothing to surface or retrieval
+    # was disabled (eval's memory-on/off comparison) — system_prompt()
+    # treats that as "no memory section" either way.
+    memory_context: str = ""

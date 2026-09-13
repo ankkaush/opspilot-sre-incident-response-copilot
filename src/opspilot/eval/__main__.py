@@ -1,5 +1,5 @@
 """Run with: python -m opspilot.eval [--scenarios key1,key2] [--label LABEL]
-[--no-judge] [--compare-to LABEL]
+[--no-judge] [--no-memory] [--compare-to LABEL]
 
 Requires ANTHROPIC_API_KEY — this runs the real agent (and, unless
 --no-judge, a real judge call) against the golden dataset. Scope which
@@ -26,6 +26,11 @@ def main() -> None:
         "--no-judge", action="store_true", help="Skip LLM-as-judge scoring (deterministic checks only)."
     )
     parser.add_argument("--compare-to", help="Label of a previously saved run to compare against.")
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable v0.4 memory retrieval for this run (the on/off lever for measuring its impact).",
+    )
     args = parser.parse_args()
 
     scenario_keys = args.scenarios.split(",") if args.scenarios else None
@@ -39,6 +44,7 @@ def main() -> None:
             judge_chat_fn=None if args.no_judge else chat_fn,
             scenario_keys=scenario_keys,
             run_label=args.label,
+            memory_enabled=not args.no_memory,
         )
     finally:
         session.close()

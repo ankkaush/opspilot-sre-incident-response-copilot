@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.4 Phase 1 — Memory schema & write policy. v0.1–v0.3 are complete and frozen. v0.4 gives the agent service-scoped memory of confirmed root causes and fixes, written at incident close and retrieved during investigation — this phase builds the schema and the write path; Phase 2 wires retrieval into `gather_context` and measures its impact with the v0.3 eval harness.
+**Status:** v0.4 complete — Context-Aware Agent. v0.1–v0.3 are frozen. Phase 1 built service-scoped memory's schema and write policy; this phase (Phase 2) wires retrieval into `gather_context` as advisory context, adds a per-service memory dashboard, and proves — with a reproducible, zero-cost eval-harness comparison — that memory actually reduces the tool calls needed to reach the same correct diagnosis on a repeat-pattern incident.
 
 ## What exists right now
 
@@ -162,9 +162,9 @@ into this repo).
   drill-through from score to reasoning the blueprint's "done when" for
   this phase asks for.
 - **Service-scoped memory of confirmed diagnoses** (`opspilot.memory`,
-  `service_memory` table) — the start of v0.4. Every incident close runs
-  through one write-policy gate (`write_confirmed_memory`): a memory row is
-  written only for a confirmed diagnosis (never for `recommended_action ==
+  `service_memory` table) — v0.4. Every incident close runs through one
+  write-policy gate (`write_confirmed_memory`): a memory row is written
+  only for a confirmed diagnosis (never for `recommended_action ==
   "escalate"`, the model's own "I'm not confident enough" signal) at or
   above a configurable confidence floor (`MEMORY_WRITE_MIN_CONFIDENCE`,
   default 0.6) — never from raw model chatter, only from the structured
@@ -177,10 +177,38 @@ into this repo).
   Every read is scoped by `service_id` — there is no function in
   `opspilot.memory` that can return another service's rows (proven
   adversarially in `tests/test_memory.py`). A minimal admin endpoint
-  (`DELETE /api/v1/memory/{id}`) lets a wrong entry be removed. Not yet
-  wired into `gather_context` or the dashboard — that's Phase 2, once the
-  v0.3 eval harness can prove retrieval actually helps rather than just
-  existing.
+  (`DELETE /api/v1/memory/{id}`) lets a wrong entry be removed.
+- **Retrieval, wired into the real investigation** (`opspilot.memory.
+  retrieve_relevant_memory`/`format_memory_for_prompt`, `opspilot.agent.
+  support.system_prompt`) — Phase 2. Once per investigation (not once per
+  `gather_context` self-loop iteration), the top few memory rows for the
+  incident's service — ranked by how many times a pattern's been confirmed,
+  then confidence, then recency — are rendered as a clearly-labeled "Prior
+  related incidents" block and appended to the system prompt. The
+  contamination guardrail is explicit in that text, not just in code: prior
+  incidents may suggest a hypothesis, but the model is told outright to
+  trust current evidence over memory whenever the two disagree.
+  `memory_enabled=False` (threaded through `investigate`/
+  `run_investigation`/`run_scenario`/`run_eval`, and `--no-memory` on the
+  eval CLI) is the on/off lever for measuring retrieval's own impact — real
+  incidents always leave it at the default.
+- **Measured impact, reproducibly, at zero cost** (`tests/
+  test_memory_eval_impact.py`) — the v0.3 eval harness, unchanged, run
+  twice against a golden scenario primed with its own confirmed diagnosis
+  as memory (a repeat pattern): once with retrieval on, once off, driven by
+  a scripted chat function that deterministically takes fewer confirmatory
+  tool calls when the memory block is present in its system prompt and a
+  full evidence sweep when it isn't — both converging on the identical,
+  correct diagnosis. `mean_steps_used` drops from 5 to 2 with memory
+  enabled, `recommended_action_exact_match_rate` and `policy_verdict_
+  accuracy` stay at 1.0 either way: memory changes efficiency, not
+  correctness, and the comparison is exact and reproducible in CI rather
+  than resting on live model variance between two paid runs.
+- **A per-service memory dashboard** (`/services/[name]/memory`) — what
+  OpsPilot has confirmed about a service (symptom pattern, root cause, fix,
+  outcome, confidence, how many times confirmed, when, from which
+  incident), linked from the home page per service, with a Delete action
+  per row wired to the Phase 1 admin endpoint for correcting a wrong entry.
 
 ## Running an investigation
 
@@ -214,7 +242,8 @@ roughly the same order of magnitude as two dozen ordinary investigations
 ```bash
 python -m opspilot.eval --scenarios checkout-deploy-outage,payments-db-latency --label baseline
 python -m opspilot.eval --scenarios checkout-deploy-outage,payments-db-latency --label candidate --compare-to baseline
-python -m opspilot.eval --no-judge   # deterministic checks only, still real agent calls
+python -m opspilot.eval --no-judge     # deterministic checks only, still real agent calls
+python -m opspilot.eval --no-memory    # v0.4: disable memory retrieval for this run
 ```
 
 Prints a scorecard, saves the full result to `eval_runs/<label>.json`, and
@@ -357,8 +386,8 @@ src/opspilot/
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
   routers/eval_runs.py Read-only API over eval_runs/*.json for the dashboard
   memory.py             Service-scoped memory: write policy, consolidation,
-                        scoped retrieval (opspilot.memory)
-  routers/memory.py     Admin correction endpoint (DELETE /api/v1/memory/{id})
+                        scoped retrieval, prompt formatting (opspilot.memory)
+  routers/memory.py     GET .../memory (dashboard) + DELETE /api/v1/memory/{id}
   eval/deterministic.py Code-only scoring: policy/action match, tool
                        selection, errors, cost, tokens, latency
   eval/judge.py        LLM-as-judge: diagnosis accuracy, evidence
@@ -384,9 +413,12 @@ tests/                 Auth, migration round-trip, seed determinism +
                        tests (redaction, serialization, no-op-when-
                        unconfigured behavior), service-memory tests
                        (write-policy gate, outcome derivation, consolidation,
-                       cross-service isolation, admin correction endpoint)
+                       cross-service isolation, retrieval ranking, read/admin
+                       endpoints), the memory-impact eval-harness comparison
+                       (test_memory_eval_impact.py)
 web/                   Next.js dashboard (incident list, pending-approvals
                        queue, graph-state view, approval form, timeline,
-                       eval run list + per-run scorecard with trace links)
+                       eval run list + per-run scorecard with trace links,
+                       per-service memory view with delete/correction)
 eval_runs/             Eval results (gitignored — regenerable output)
 ```

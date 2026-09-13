@@ -26,6 +26,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.text();
     throw new Error(`OpsPilot API ${res.status} on ${path}: ${body}`);
   }
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
@@ -35,6 +38,25 @@ export type Scenario = {
   service_id: number;
   title: string;
   incident_started_at: string;
+};
+
+export type Service = {
+  id: number;
+  name: string;
+  description: string;
+};
+
+export type ServiceMemoryEntry = {
+  id: number;
+  service_id: number;
+  source_incident_id: number;
+  symptom_pattern: string;
+  root_cause: string;
+  fix_applied: string;
+  outcome: string;
+  confidence: number;
+  occurrence_count: number;
+  created_at: string;
 };
 
 export type Diagnosis = {
@@ -214,4 +236,9 @@ export const api = {
     }),
   listEvalRuns: () => apiFetch<EvalRunSummary[]>("/api/v1/eval-runs"),
   getEvalRun: (label: string) => apiFetch<EvalRun>(`/api/v1/eval-runs/${label}`),
+  listServices: () => apiFetch<Service[]>("/api/v1/services"),
+  getServiceMemory: (serviceName: string) =>
+    apiFetch<ServiceMemoryEntry[]>(`/api/v1/services/${encodeURIComponent(serviceName)}/memory`),
+  deleteMemoryEntry: (id: number) =>
+    apiFetch<void>(`/api/v1/memory/${id}`, { method: "DELETE" }),
 };

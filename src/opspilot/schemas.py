@@ -153,3 +153,19 @@ class EvalRunOut(BaseModel):
     scenario_keys: list[str]
     scenarios: list[EvalScenarioResultOut]
     aggregate: AggregateScores
+
+
+# v0.4 Phase 2 — the per-service "what does the agent know" dashboard view.
+class ServiceMemoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    service_id: int
+    source_incident_id: int
+    symptom_pattern: str
+    root_cause: str
+    fix_applied: str
+    outcome: str
+    confidence: float
+    occurrence_count: int
+    created_at: dt.datetime

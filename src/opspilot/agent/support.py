@@ -15,7 +15,7 @@ MAX_TOOL_RESULT_CHARS = 4000
 # Langfuse trace (opspilot.agent.tracing) alongside GRAPH_VERSION, so a
 # prompt edit's effect on the eval scorecard is traceable to this exact
 # version, not just "sometime before/after."
-PROMPT_VERSION = "0.3.0"
+PROMPT_VERSION = "0.4.0"
 
 SUBMIT_DIAGNOSIS_TOOL = {
     "name": "submit_diagnosis",
@@ -27,8 +27,8 @@ SUBMIT_DIAGNOSIS_TOOL = {
 }
 
 
-def system_prompt(scenario: Scenario) -> str:
-    return (
+def system_prompt(scenario: Scenario, memory_context: str = "") -> str:
+    prompt = (
         "You are OpsPilot, an SRE incident-investigation assistant working in a read-only "
         "synthetic environment. You are investigating one incident:\n\n"
         f"Service: {scenario.service.name}\n"
@@ -45,6 +45,15 @@ def system_prompt(scenario: Scenario) -> str:
         "recommended action. If the evidence is incomplete or contradictory, recommend "
         "'escalate' rather than guessing."
     )
+    # v0.4 Phase 2 — service-scoped memory of prior confirmed incidents
+    # (opspilot.memory), when there is any and retrieval hasn't been
+    # disabled. Appended, not woven in: `memory_context` already carries
+    # its own advisory/contamination-guardrail framing (see
+    # opspilot.memory.format_memory_for_prompt), so it stands as a clearly
+    # separate block rather than blending into the incident description.
+    if memory_context:
+        prompt += "\n\n" + memory_context
+    return prompt
 
 
 def content_blocks_to_dicts(blocks) -> list[dict]:

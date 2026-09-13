@@ -65,13 +65,19 @@ def investigate(
     thread_id: str | None = None,
     max_steps: int | None = None,
     max_cost_usd: float | None = None,
+    memory_enabled: bool = True,
 ) -> InvestigationResult:
     """Convenience wrapper for a single run. Since v0.2 Phase 3, an
     investigation can legitimately come back with status "awaiting_approval"
     instead of finishing — resuming it is `opspilot.agent.graph.
     resume_investigation`, called with the same `thread_id` you pass here
     (or read back from nowhere, if you let this generate one — pass an
-    explicit `thread_id` whenever you might need to resume)."""
+    explicit `thread_id` whenever you might need to resume).
+
+    `memory_enabled=False` skips v0.4's memory retrieval entirely — the
+    eval harness's on/off lever for measuring retrieval's actual impact
+    (opspilot.eval.runner); real incidents always leave it at the default.
+    """
     return run_investigation(
         session,
         scenario,
@@ -79,4 +85,5 @@ def investigate(
         thread_id=thread_id or f"investigate-{uuid4()}",
         max_steps=max_steps,
         max_cost_usd=max_cost_usd,
+        memory_enabled=memory_enabled,
     )

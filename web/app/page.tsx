@@ -5,7 +5,11 @@ import { createAndRunIncident } from "@/lib/actions";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [incidents, scenarios] = await Promise.all([api.listIncidents(), api.listScenarios()]);
+  const [incidents, scenarios, services] = await Promise.all([
+    api.listIncidents(),
+    api.listScenarios(),
+    api.listServices(),
+  ]);
   const pending = incidents.filter((i) => i.status === "awaiting_approval");
 
   return (
@@ -13,6 +17,13 @@ export default async function HomePage() {
       <h1>OpsPilot</h1>
       <p className="muted">
         SRE Incident Response Copilot — synthetic environment · <Link href="/eval">Eval runs</Link>
+        {" · Memory: "}
+        {services.map((service, i) => (
+          <span key={service.id}>
+            {i > 0 && ", "}
+            <Link href={`/services/${service.name}/memory`}>{service.name}</Link>
+          </span>
+        ))}
       </p>
 
       <h2>Start a new investigation</h2>

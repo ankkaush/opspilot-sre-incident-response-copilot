@@ -112,6 +112,7 @@ def run_scenario(
     judge_chat_fn: ChatFn | None,
     max_steps: int | None = None,
     max_cost_usd: float | None = None,
+    memory_enabled: bool = True,
 ) -> ScenarioEvalResult:
     started = time.monotonic()
     result = investigate(
@@ -121,6 +122,7 @@ def run_scenario(
         thread_id=f"eval-{spec.key}-{started}",
         max_steps=max_steps,
         max_cost_usd=max_cost_usd,
+        memory_enabled=memory_enabled,
     )
     latency = time.monotonic() - started
 
@@ -153,6 +155,7 @@ def run_eval(
     run_label: str = "eval",
     max_steps: int | None = None,
     max_cost_usd: float | None = None,
+    memory_enabled: bool = True,
 ) -> EvalRun:
     specs = [s for s in ALL_SCENARIOS if scenario_keys is None or s.key in scenario_keys]
     if not specs:
@@ -170,6 +173,7 @@ def run_eval(
                 judge_chat_fn=judge_chat_fn,
                 max_steps=max_steps,
                 max_cost_usd=max_cost_usd,
+                memory_enabled=memory_enabled,
             )
         )
 

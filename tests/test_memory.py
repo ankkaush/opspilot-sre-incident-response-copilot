@@ -1,5 +1,6 @@
 """Service-scoped memory: the write-policy gate, outcome derivation,
-consolidation, cross-service isolation, and the admin correction endpoint.
+consolidation, cross-service isolation, retrieval ranking, and the
+read/admin-correction endpoints (v0.4 Phases 1 and 2).
 
 Unit-level tests build an InvestigationResult directly rather than running a
 full investigation — write_confirmed_memory only ever reads that structured
@@ -11,10 +12,17 @@ import uuid
 
 import pytest
 
-from opspilot.agent.loop import get_chat_fn
+from opspilot.agent.loop import get_chat_fn, investigate
 from opspilot.agent.schemas import InvestigationResult, SubmitDiagnosisArgs
 from opspilot.main import app
-from opspilot.memory import consolidate_service_memory, list_service_memory, write_confirmed_memory
+from opspilot.memory import (
+    MEMORY_CONTEXT_LIMIT,
+    consolidate_service_memory,
+    format_memory_for_prompt,
+    list_service_memory,
+    retrieve_relevant_memory,
+    write_confirmed_memory,
+)
 from opspilot.models import Incident, Service, ServiceMemory
 from opspilot.seed.generator import seed_all
 from tests.fakes import ScriptedChatFn, text_response, tool_use_response
@@ -321,3 +329,184 @@ def test_delete_memory_entry_removes_it(client, auth_headers, db_session, make_s
     assert resp.status_code == 204
 
     assert db_session.query(ServiceMemory).filter_by(id=memory_id).one_or_none() is None
+
+
+# --- Retrieval (v0.4 Phase 2) -----------------------------------------------
+
+
+def test_retrieve_relevant_memory_ranks_by_occurrence_then_confidence_then_recency(
+    db_session, make_service, make_incident
+):
+    service_id = make_service()
+    once_but_very_confident = _diagnosed_result(
+        confidence=0.99,
+        evidence=["metrics:cpu_pct"],
+        recommended_action="scale_service",
+        policy_verdict="EXECUTE",
+    )
+    write_confirmed_memory(
+        db_session, service_id=service_id, incident_id=make_incident(), result=once_but_very_confident
+    )
+    db_session.commit()
+
+    # Same (evidence, fix) pattern confirmed twice — consolidation should
+    # merge these into one row with occurrence_count == 2, and that row
+    # should outrank the single, more-confident entry above: occurrence
+    # count is the primary ranking key, not confidence.
+    twice_confirmed_pattern = _diagnosed_result(
+        confidence=0.7, approval_decision={"approved": True, "actor": "alice"}
+    )
+    write_confirmed_memory(
+        db_session, service_id=service_id, incident_id=make_incident(), result=twice_confirmed_pattern
+    )
+    db_session.commit()
+    write_confirmed_memory(
+        db_session,
+        service_id=service_id,
+        incident_id=make_incident(),
+        result=_diagnosed_result(confidence=0.75, approval_decision={"approved": True, "actor": "alice"}),
+    )
+    db_session.commit()
+    consolidate_service_memory(db_session, service_id)
+    db_session.commit()
+
+    ranked = retrieve_relevant_memory(db_session, service_id)
+    assert ranked[0].fix_applied == twice_confirmed_pattern.diagnosis.recommended_action
+    assert ranked[0].occurrence_count == 2
+
+
+def test_retrieve_relevant_memory_respects_limit(db_session, make_service, make_incident):
+    service_id = make_service()
+    for i in range(MEMORY_CONTEXT_LIMIT + 2):
+        write_confirmed_memory(
+            db_session,
+            service_id=service_id,
+            incident_id=make_incident(),
+            result=_diagnosed_result(
+                evidence=[f"logs:pattern-{i}"],
+                approval_decision={"approved": True, "actor": "alice"},
+            ),
+        )
+    db_session.commit()
+
+    ranked = retrieve_relevant_memory(db_session, service_id)
+    assert len(ranked) == MEMORY_CONTEXT_LIMIT
+
+
+def test_retrieve_relevant_memory_is_scoped_by_service(db_session, make_service, make_incident):
+    service_a, service_b = make_service(), make_service()
+    write_confirmed_memory(
+        db_session,
+        service_id=service_a,
+        incident_id=make_incident(),
+        result=_diagnosed_result(approval_decision={"approved": True, "actor": "alice"}),
+    )
+    db_session.commit()
+
+    assert retrieve_relevant_memory(db_session, service_b) == []
+    assert len(retrieve_relevant_memory(db_session, service_a)) == 1
+
+
+def test_format_memory_for_prompt_empty_when_no_rows():
+    assert format_memory_for_prompt([]) == ""
+
+
+def test_format_memory_for_prompt_carries_contamination_guardrail_and_content(
+    db_session, make_service, make_incident
+):
+    service_id = make_service()
+    write_confirmed_memory(
+        db_session,
+        service_id=service_id,
+        incident_id=make_incident(),
+        result=_diagnosed_result(approval_decision={"approved": True, "actor": "alice"}),
+    )
+    db_session.commit()
+
+    rows = retrieve_relevant_memory(db_session, service_id)
+    text = format_memory_for_prompt(rows)
+
+    assert "advisory" in text.lower()
+    assert "trust the current evidence" in text.lower()
+    assert "rollback_deployment" in text
+    assert "deployment:v2.8" in text
+
+
+def test_gather_context_system_prompt_includes_memory_when_enabled(
+    db_session, checkout_scenario, make_incident
+):
+    """End-to-end: memory primed for a service actually reaches the model's
+    system prompt on the very first gather_context call — not just that the
+    formatting function produces the right text in isolation."""
+    write_confirmed_memory(
+        db_session,
+        service_id=checkout_scenario.service_id,
+        incident_id=make_incident(),
+        result=_diagnosed_result(approval_decision={"approved": True, "actor": "alice"}),
+    )
+    db_session.commit()
+
+    scripted = ScriptedChatFn(responses=list(HAPPY_PATH_SCRIPT))
+    investigate(
+        db_session, checkout_scenario, chat_fn=scripted, thread_id="test-memory-in-prompt-on"
+    )
+
+    assert "Prior related incidents" in scripted.calls[0]["system"]
+    assert "rollback_deployment" in scripted.calls[0]["system"]
+
+
+def test_gather_context_system_prompt_omits_memory_when_disabled(
+    db_session, checkout_scenario, make_incident
+):
+    write_confirmed_memory(
+        db_session,
+        service_id=checkout_scenario.service_id,
+        incident_id=make_incident(),
+        result=_diagnosed_result(approval_decision={"approved": True, "actor": "alice"}),
+    )
+    db_session.commit()
+
+    scripted = ScriptedChatFn(responses=list(HAPPY_PATH_SCRIPT))
+    investigate(
+        db_session,
+        checkout_scenario,
+        chat_fn=scripted,
+        thread_id="test-memory-in-prompt-off",
+        memory_enabled=False,
+    )
+
+    assert "Prior related incidents" not in scripted.calls[0]["system"]
+
+
+# --- Per-service memory read endpoint ---------------------------------------
+
+
+def test_get_service_memory_returns_scoped_entries(
+    client, auth_headers, db_session, checkout_scenario, payments_scenario, make_incident
+):
+    for scenario in (checkout_scenario, payments_scenario):
+        write_confirmed_memory(
+            db_session,
+            service_id=scenario.service_id,
+            incident_id=make_incident(),
+            result=_diagnosed_result(approval_decision={"approved": True, "actor": "alice"}),
+        )
+    db_session.commit()
+
+    resp = client.get(
+        f"/api/v1/services/{checkout_scenario.service.name}/memory", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) >= 1
+    assert all(row["service_id"] == checkout_scenario.service_id for row in body)
+
+
+def test_get_service_memory_requires_auth(client, checkout_scenario):
+    resp = client.get(f"/api/v1/services/{checkout_scenario.service.name}/memory")
+    assert resp.status_code == 401
+
+
+def test_get_service_memory_unknown_service_returns_404(client, auth_headers):
+    resp = client.get("/api/v1/services/does-not-exist/memory", headers=auth_headers)
+    assert resp.status_code == 404
