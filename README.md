@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.5 Phase 1 — Persistence layer. v0.1–v0.4 are complete and frozen. v0.5 is about surviving the failure mode real incident response has to survive: a long wait for a human, or a crash mid-workflow. This phase replaces the process-lifetime in-memory checkpointer with a durable, Postgres-backed one, so a paused or in-flight investigation survives an actual process restart, not just a request boundary — proven by a kill-and-resume harness that kills the process at every node boundary in turn and restarts it. Phase 2 (idempotent remediation, genuine async waits) and Phase 3 (hardening, v0.5.0 freeze) are next.
+**Status:** v0.5 Phase 2 — Idempotency & crash recovery. v0.1–v0.4 are complete and frozen. Phase 1 made checkpointing durable across a process restart; this phase closes the gap durability alone doesn't: LangGraph's documented contract is that resuming past an `interrupt()` call re-enters the whole node function, so a crash between a human's approval and that node's own checkpoint being written can otherwise re-run the remediation call a second time. Every remediation action is now idempotency-keyed, and a detected duplicate is surfaced explicitly in the incident's audit trail — not silently absorbed. Phase 3 (hardening, v0.5.0 freeze) is next.
 
 ## What exists right now
 
@@ -234,6 +234,41 @@ into this repo).
   session and chat_fn, is never serialized — has no field shaped like a
   secret by construction, verified directly against a real persisted
   checkpoint row using the same key-name redaction list Langfuse traces use.
+- **Idempotent remediation execution** (`opspilot.agent.idempotency`) — v0.5
+  Phase 2. `evaluate_policy` calling `interrupt()` on `REQUIRE_APPROVAL`
+  means LangGraph re-enters that entire node function from the top on
+  resume (its own documented contract, not a bug — see the docstring); a
+  crash after a human's decision is known but before that node's own
+  checkpoint is durably written means a later resume reaches the
+  remediation call again for the identical decision. `execute_idempotently`
+  closes that gap: a deterministic key over `(thread_id, action_type,
+  target, params)`, claimed in its own immediately-committed session —
+  deliberately not the long-lived per-investigation session, since the
+  guarantee must hold even if that session's own eventual commit never
+  runs. A second attempt at the same key returns the first attempt's
+  recorded result instead of calling the remediation tool again, and flags
+  it (`deduplicated: true`) — surfaced directly in the incident's timeline
+  ("remediation already executed once (crash-and-resume detected, not
+  re-run)"), not silently absorbed. Applied uniformly to both the
+  `REQUIRE_APPROVAL` and auto-executed `EXECUTE` paths, since both are
+  subject to the same LangGraph re-entry contract. Verified at the node
+  level (`tests/test_idempotency.py`) by calling the extracted,
+  interrupt-free `_resolve_verdict` twice with identical inputs — the
+  precise, direct simulation of the actual re-entry mechanism, rather than
+  a fragile attempt to trigger a real crash mid-function — plus an
+  audit-trail-visibility test through the real approval HTTP endpoint, and
+  cross-incident isolation (two different investigations recommending the
+  same action never look like duplicates of each other).
+  **Scope note:** the blueprint's Phase 2 "Build" line also mentions
+  "verifying recovery" becoming a genuine async wait node alongside
+  awaiting-approval. That's not built here — there's no post-remediation
+  recovery-verification step anywhere in this codebase to make durable in
+  the first place, the phase's own "Done when" criterion doesn't reference
+  it, and inventing a metrics-polling node with no spec beyond a four-word
+  mention would be speculative scope, not implementation. Awaiting-approval
+  itself needed no new work this phase: `interrupt()` was already a
+  non-blocking, and (as of Phase 1) durable, wait — Phase 2's actual new
+  contribution is the idempotency guarantee.
 
 ## Running an investigation
 
@@ -362,7 +397,8 @@ Checkpointing is durable across process restarts as of v0.5 (that's the
 point) — a session-scoped fixture in `conftest.py` truncates the checkpoint
 tables once per test run, so a fixed `thread_id` some test used in a
 *previous* pytest invocation against the same Postgres container can't
-resume stale state instead of starting fresh.
+resume stale state instead of starting fresh. A second fixture does the
+same for `remediation_executions` (v0.5 Phase 2), for the same reason.
 
 ## Secrets & security
 
@@ -417,6 +453,9 @@ src/opspilot/
   agent/checkpointer.py Durable Postgres checkpointer: singleton + fresh-
                        instance factory, conn-string conversion, msgpack
                        allowlist (opspilot.agent.checkpointer)
+  agent/idempotency.py  Idempotent remediation execution: deterministic
+                       key + immediately-committed claim-or-return
+                       (opspilot.agent.idempotency)
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
   routers/eval_runs.py Read-only API over eval_runs/*.json for the dashboard
   memory.py             Service-scoped memory: write policy, consolidation,
@@ -450,7 +489,8 @@ tests/                 Auth, migration round-trip, seed determinism +
                        cross-service isolation, retrieval ranking, read/admin
                        endpoints), the memory-impact eval-harness comparison
                        (test_memory_eval_impact.py), the checkpointer kill-
-                       and-resume harness (test_checkpointer.py)
+                       and-resume harness (test_checkpointer.py), the
+                       idempotency/crash-recovery tests (test_idempotency.py)
 web/                   Next.js dashboard (incident list, pending-approvals
                        queue, graph-state view, approval form, timeline,
                        eval run list + per-run scorecard with trace links,

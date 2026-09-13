@@ -16,6 +16,7 @@ from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from opspilot.agent.client import TransientProviderError, call_with_retries, estimate_cost_usd
+from opspilot.agent.idempotency import execute_idempotently
 from opspilot.agent.policy import ProposedAction
 from opspilot.agent.policy import evaluate as evaluate_policy_verdict
 from opspilot.agent.remediation_tools import (
@@ -293,7 +294,20 @@ def _execute_approved_action(deps: NodeDeps, action_type: str, params: dict | No
         )
         return None
     ctx = RemediationContext(session=deps.session, scenario=deps.scenario)
-    return handler(ctx, validated)
+    # v0.5 Phase 2 — resuming past evaluate_policy's interrupt() re-enters
+    # this whole function from the top (see evaluate_policy's docstring); a
+    # crash between the human's decision being known and this node's own
+    # checkpoint being written means a later resume reaches this call a
+    # second time for the identical decision. execute_idempotently is what
+    # keeps that from actually running the remediation twice.
+    result, deduplicated = execute_idempotently(
+        thread_id=deps.thread_id,
+        action_type=action_type,
+        target=deps.scenario.service.name,
+        params=validated.model_dump(),
+        executor=lambda: handler(ctx, validated),
+    )
+    return {**result, "deduplicated": deduplicated}
 
 
 def _resolve_verdict(
@@ -322,10 +336,21 @@ def _resolve_verdict(
 
     remediation_result = None
     if verdict == "EXECUTE":
-        executor = _AUTO_EXECUTABLE.get(diagnosis.recommended_action)
-        if executor is not None:
+        auto_executor = _AUTO_EXECUTABLE.get(diagnosis.recommended_action)
+        if auto_executor is not None:
             ctx = RemediationContext(session=deps.session, scenario=deps.scenario)
-            remediation_result = executor(ctx)
+            # Same idempotency guard as the REQUIRE_APPROVAL path — a crash
+            # between this node starting and its checkpoint being written
+            # would otherwise re-run the whole node, executor included, on
+            # resume (see the REQUIRE_APPROVAL branch above for why).
+            result, deduplicated = execute_idempotently(
+                thread_id=deps.thread_id,
+                action_type=diagnosis.recommended_action,
+                target=deps.scenario.service.name,
+                params={},
+                executor=lambda: auto_executor(ctx),
+            )
+            remediation_result = {**result, "deduplicated": deduplicated}
         # "no_action" also verdicts EXECUTE but has no executor — nothing to
         # run, and remediation_result correctly stays None.
 

@@ -79,6 +79,12 @@ class NodeDeps:
     chat_fn: ChatFn
     max_steps: int
     max_cost_usd: float
+    # v0.5 Phase 2 — the graph's thread_id, needed to key remediation
+    # idempotency (opspilot.agent.idempotency): two different investigations
+    # legitimately calling the "same" action_type/target/params must never
+    # be treated as duplicates of each other, only a genuine re-entry of the
+    # *same* investigation's *same* decision should be.
+    thread_id: str
     # v0.4 Phase 2 — pre-formatted "prior related incidents" text (see
     # opspilot.memory.format_memory_for_prompt), computed once per
     # investigation rather than re-queried on every gather_context

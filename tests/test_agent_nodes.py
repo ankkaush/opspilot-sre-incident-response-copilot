@@ -3,6 +3,8 @@ LangGraph: each step of the investigation is now a plain function callable
 and assertable on its own, not a stretch of a while-loop body.
 """
 
+import uuid
+
 import pytest
 
 from opspilot.agent.client import TransientProviderError
@@ -22,9 +24,20 @@ from tests.fakes import ScriptedChatFn, tool_use_response
 _NO_OP_CHAT_FN = lambda **_: None  # noqa: E731 — route/hypothesize/classify_risk/decide never call it
 
 
-def _deps(db_session, scenario, chat_fn=_NO_OP_CHAT_FN, max_steps=8, max_cost_usd=1.0) -> NodeDeps:
+def _deps(
+    db_session, scenario, chat_fn=_NO_OP_CHAT_FN, max_steps=8, max_cost_usd=1.0, thread_id=None
+) -> NodeDeps:
+    # A unique thread_id per call by default — remediation idempotency
+    # (opspilot.agent.idempotency) is keyed on it, so two unrelated test
+    # calls with the same action_type/params must never collide and look
+    # like a duplicate of each other.
     return NodeDeps(
-        session=db_session, scenario=scenario, chat_fn=chat_fn, max_steps=max_steps, max_cost_usd=max_cost_usd
+        session=db_session,
+        scenario=scenario,
+        chat_fn=chat_fn,
+        max_steps=max_steps,
+        max_cost_usd=max_cost_usd,
+        thread_id=thread_id or f"test-{uuid.uuid4()}",
     )
 
 

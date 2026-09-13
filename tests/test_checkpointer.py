@@ -122,15 +122,16 @@ def test_persisted_checkpoint_payload_has_no_secret_shaped_keys(
     rather than just the schema — an investigation actually runs, and the
     raw checkpoint payload it leaves behind is inspected directly."""
     checkpointer = make_checkpointer()
+    thread_id = "checkpoint-secret-scan"
     deps = NodeDeps(
         session=db_session,
         scenario=checkout_scenario,
         chat_fn=ScriptedChatFn(responses=list(_EXECUTE_SCRIPT)),
         max_steps=8,
         max_cost_usd=1.0,
+        thread_id=thread_id,
     )
     compiled = build_graph(deps, checkpointer=checkpointer)
-    thread_id = "checkpoint-secret-scan"
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 20}
     compiled.invoke(initial_state(), config=config)
 
@@ -155,6 +156,7 @@ def test_kill_and_resume_at_each_node_boundary(
         chat_fn=shared_chat_fn,
         max_steps=8,
         max_cost_usd=1.0,
+        thread_id=thread_id,
     )
     compiled_1 = build_graph(
         deps_1, checkpointer=make_checkpointer(), interrupt_before=[kill_at]
@@ -174,6 +176,7 @@ def test_kill_and_resume_at_each_node_boundary(
         chat_fn=shared_chat_fn,
         max_steps=8,
         max_cost_usd=1.0,
+        thread_id=thread_id,
     )
     compiled_2 = build_graph(deps_2, checkpointer=make_checkpointer())
     final_state = compiled_2.invoke(None, config=config)

@@ -216,3 +216,35 @@ class AuditLogEntry(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
 
     incident: Mapped["Incident"] = relationship(back_populates="audit_entries")
+
+
+class RemediationExecution(Base):
+    """The idempotency guard for remediation actions (v0.5 Phase 2).
+
+    LangGraph re-enters a node function from the top when resuming past an
+    `interrupt()` call (see `opspilot.agent.nodes.evaluate_policy`'s own
+    docstring) — a crash after the human's decision is known but before
+    that node's checkpoint is durably written means a later resume replays
+    the *already-answered* interrupt and reaches the remediation call
+    again. One row here, keyed by `idempotency_key`, is what makes a second
+    attempt at the identical (thread, action, target, params) tuple return
+    the first attempt's recorded result instead of calling the remediation
+    tool a second time — see `opspilot.agent.idempotency.
+    execute_idempotently`, the only writer of this table.
+
+    Written via its own immediately-committed session, deliberately not
+    the long-lived per-investigation one: the guarantee only holds if this
+    row survives a crash that happens before that session's own eventual
+    commit ever runs.
+    """
+
+    __tablename__ = "remediation_executions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    thread_id: Mapped[str] = mapped_column(String(128))
+    action_type: Mapped[str] = mapped_column(String(32))
+    target: Mapped[str] = mapped_column(String(128))
+    params: Mapped[dict] = mapped_column(JSONB)
+    result: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))

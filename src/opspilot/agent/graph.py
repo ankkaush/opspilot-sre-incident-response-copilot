@@ -117,6 +117,7 @@ def _build_deps(
     max_steps: int | None,
     max_cost_usd: float | None,
     *,
+    thread_id: str,
     memory_enabled: bool = True,
 ) -> NodeDeps:
     settings = get_settings()
@@ -134,6 +135,7 @@ def _build_deps(
         chat_fn=chat_fn,
         max_steps=max_steps if max_steps is not None else settings.agent_max_steps,
         max_cost_usd=max_cost_usd if max_cost_usd is not None else settings.agent_max_cost_usd,
+        thread_id=thread_id,
         memory_context=memory_context,
     )
 
@@ -194,7 +196,13 @@ def run_investigation(
     memory_enabled: bool = True,
 ) -> InvestigationResult:
     deps = _build_deps(
-        session, scenario, chat_fn, max_steps, max_cost_usd, memory_enabled=memory_enabled
+        session,
+        scenario,
+        chat_fn,
+        max_steps,
+        max_cost_usd,
+        thread_id=thread_id,
+        memory_enabled=memory_enabled,
     )
     compiled = build_graph(deps)
 
@@ -240,7 +248,9 @@ def resume_investigation(
     parameter exists only to keep this function's signature symmetric with
     run_investigation's.
     """
-    deps = _build_deps(session, scenario, chat_fn, max_steps, max_cost_usd, memory_enabled=False)
+    deps = _build_deps(
+        session, scenario, chat_fn, max_steps, max_cost_usd, thread_id=thread_id, memory_enabled=False
+    )
     compiled = build_graph(deps)
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": deps.max_steps + 10}
     # A resume gets its own trace rather than continuing the original one —

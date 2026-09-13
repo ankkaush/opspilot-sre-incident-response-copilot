@@ -2,6 +2,7 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from opspilot.agent.checkpointer import get_postgres_checkpointer
 from opspilot.db import SessionLocal
@@ -39,6 +40,23 @@ def _clear_checkpoints_once():
     checkpointer = get_postgres_checkpointer()  # ensures setup() has run first
     with checkpointer.conn.connection() as conn, conn.cursor() as cur:
         cur.execute("TRUNCATE checkpoints, checkpoint_writes, checkpoint_blobs")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clear_remediation_executions_once():
+    """Same reasoning as `_clear_checkpoints_once`, for the v0.5 Phase 2
+    idempotency guard (opspilot.agent.idempotency): a remediation action
+    claimed by some *previous* pytest invocation against this same Postgres
+    container would otherwise still be recorded, and a test expecting a
+    fresh (non-deduplicated) execution would see `deduplicated=True`
+    instead — for a reason that has nothing to do with what it's testing.
+    """
+    session = SessionLocal()
+    try:
+        session.execute(text("TRUNCATE remediation_executions"))
+        session.commit()
+    finally:
+        session.close()
 
 
 @pytest.fixture

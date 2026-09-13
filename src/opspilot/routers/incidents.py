@@ -361,6 +361,13 @@ def get_timeline(
             else:
                 verb = "Approved" if args.get("approved") else "Denied"
                 label = f"{verb} by {args.get('actor', 'unknown')}"
+            # v0.5 Phase 2 — a crash-and-resume (or a retried request) that
+            # reached this same remediation a second time is made visible
+            # here, not silently absorbed: opspilot.agent.idempotency
+            # returns the first attempt's recorded result instead of
+            # re-executing, and flags it in remediation_result itself.
+            if isinstance(row.result, dict) and row.result.get("deduplicated"):
+                label += " — remediation already executed once (crash-and-resume detected, not re-run)"
         else:
             kind = "evidence_gathered"
             label = f"Called {row.tool_name}" if row.error is None else f"Called {row.tool_name} — error"
