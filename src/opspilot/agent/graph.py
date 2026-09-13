@@ -11,27 +11,29 @@ Graph shape:
 
 `evaluate_policy` calls `interrupt()` when the policy verdict is
 REQUIRE_APPROVAL, which pauses the graph mid-node. Resuming it later — from
-`resume_investigation`, possibly in an entirely different HTTP request — is
-what `_CHECKPOINTER` exists for.
+`resume_investigation`, possibly in an entirely different HTTP request, or
+after the process itself restarted — is what the Postgres-backed
+checkpointer (`opspilot.agent.checkpointer`) exists for.
 
-`_CHECKPOINTER` is a process-lifetime `InMemorySaver`, deliberately not a
-database-backed one: this gives real pause/resume within one running
-process, but a restart loses every paused investigation. That's the correct
-scope for this phase — durable, restart-surviving checkpointing is v0.5's
-job, not v0.2's. A resumed investigation doesn't need the same compiled
-graph *object* as the one that paused it (see the note in run_investigation)
-— only the same checkpointer instance and thread_id — which is exactly what
-makes resuming from a fresh HTTP request (a fresh DB session, a fresh
-NodeDeps) work at all.
+As of v0.5 Phase 1, checkpointing is durable, not just process-lifetime: a
+paused or in-flight investigation survives a restart because every node
+transition is persisted to Postgres, not held only in process memory (see
+`opspilot.agent.checkpointer`'s module docstring for the schema-ownership
+and security notes). A resumed investigation doesn't need the same compiled
+graph *object* as the one that paused it (see the note in
+run_investigation) — only the same checkpointer *database* and thread_id —
+which is what makes resuming from a fresh HTTP request (a fresh DB session,
+a fresh NodeDeps) or a genuinely restarted process both work the same way.
 """
 
 from functools import partial
 
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from sqlalchemy.orm import Session
 
+from opspilot.agent.checkpointer import get_postgres_checkpointer
 from opspilot.agent.client import ChatFn
 from opspilot.agent.nodes import (
     classify_risk,
@@ -48,8 +50,6 @@ from opspilot.agent.tracing import to_jsonable, trace_investigation, trace_node
 from opspilot.config import get_settings
 from opspilot.memory import format_memory_for_prompt, retrieve_relevant_memory
 from opspilot.models import Scenario
-
-_CHECKPOINTER = InMemorySaver()
 
 
 def _traced(name: str, node_fn):
@@ -68,7 +68,21 @@ def _traced(name: str, node_fn):
     return wrapped
 
 
-def build_graph(deps: NodeDeps):
+def build_graph(
+    deps: NodeDeps,
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
+    interrupt_before: list[str] | None = None,
+):
+    """`checkpointer` and `interrupt_before` are both test-only knobs.
+    Production callers (run_investigation/resume_investigation) never pass
+    either: `checkpointer` defaults to the process-wide Postgres-backed
+    singleton, and `interrupt_before` defaults to no static breakpoints —
+    the only pauses that happen in production are evaluate_policy's own
+    dynamic `interrupt()` call. tests/test_checkpointer.py's kill-and-resume
+    harness uses both: a static breakpoint to simulate "the process died
+    right here," and an independently-constructed checkpointer to simulate
+    a genuinely different process attaching to the same durable store."""
     graph = StateGraph(GraphState)
 
     graph.add_node("gather_context", partial(gather_context, deps=deps))
@@ -90,7 +104,10 @@ def build_graph(deps: NodeDeps):
     graph.add_edge("evaluate_policy", "decide")
     graph.add_edge("decide", END)
 
-    return graph.compile(checkpointer=_CHECKPOINTER)
+    return graph.compile(
+        checkpointer=checkpointer or get_postgres_checkpointer(),
+        interrupt_before=interrupt_before or [],
+    )
 
 
 def _build_deps(

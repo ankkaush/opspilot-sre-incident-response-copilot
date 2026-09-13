@@ -11,7 +11,7 @@ extending the last rather than replacing it: **raw tool-calling agent → reliab
 The full phase-by-phase plan lives in the engineering blueprint (not checked
 into this repo).
 
-**Status:** v0.4 complete — Context-Aware Agent. v0.1–v0.3 are frozen. Phase 1 built service-scoped memory's schema and write policy; this phase (Phase 2) wires retrieval into `gather_context` as advisory context, adds a per-service memory dashboard, and proves — with a reproducible, zero-cost eval-harness comparison — that memory actually reduces the tool calls needed to reach the same correct diagnosis on a repeat-pattern incident.
+**Status:** v0.5 Phase 1 — Persistence layer. v0.1–v0.4 are complete and frozen. v0.5 is about surviving the failure mode real incident response has to survive: a long wait for a human, or a crash mid-workflow. This phase replaces the process-lifetime in-memory checkpointer with a durable, Postgres-backed one, so a paused or in-flight investigation survives an actual process restart, not just a request boundary — proven by a kill-and-resume harness that kills the process at every node boundary in turn and restarts it. Phase 2 (idempotent remediation, genuine async waits) and Phase 3 (hardening, v0.5.0 freeze) are next.
 
 ## What exists right now
 
@@ -209,6 +209,31 @@ into this repo).
   outcome, confidence, how many times confirmed, when, from which
   incident), linked from the home page per service, with a Delete action
   per row wired to the Phase 1 admin endpoint for correcting a wrong entry.
+- **Durable, Postgres-backed graph checkpointing** (`opspilot.agent.
+  checkpointer`) — v0.5. Replaces the process-lifetime `InMemorySaver` every
+  version through v0.4 used with LangGraph's `PostgresSaver`, persisting
+  every node transition to the same Postgres database the rest of the app
+  already uses. A paused (`awaiting_approval`) or in-flight investigation
+  now survives an actual process restart, not just a request boundary — the
+  same property that already let a pause resolve from a different HTTP
+  request now also holds across a killed-and-restarted process. The
+  checkpointer's own tables (`checkpoints`, `checkpoint_writes`,
+  `checkpoint_blobs`, `checkpoint_migrations`) are deliberately outside this
+  project's Alembic migrations — they're owned and versioned by
+  `langgraph-checkpoint-postgres` itself via an idempotent `setup()` call,
+  run once at container startup (`docker-entrypoint.sh`) and lazily on
+  first use otherwise. Verified by a kill-and-resume harness
+  (`tests/test_checkpointer.py`) that kills the process at each of the
+  graph's five node boundaries in turn — via a statically-injected
+  breakpoint plus an independently-constructed checkpointer standing in for
+  "a genuinely different process attaching to the same durable store" — and
+  asserts it always resumes from that exact boundary (never re-running
+  `gather_context`'s one model call) through both the low-level graph API
+  and the real production approval-resume HTTP path. Security: GraphState —
+  the only thing ever checkpointed; NodeDeps, which carries the live DB
+  session and chat_fn, is never serialized — has no field shaped like a
+  secret by construction, verified directly against a real persisted
+  checkpoint row using the same key-name redaction list Langfuse traces use.
 
 ## Running an investigation
 
@@ -333,6 +358,12 @@ pytest -q
 `test_migrations.py` deliberately downgrades and re-upgrades the schema as
 part of the round-trip check — don't point it at a database you care about.
 
+Checkpointing is durable across process restarts as of v0.5 (that's the
+point) — a session-scoped fixture in `conftest.py` truncates the checkpoint
+tables once per test run, so a fixed `thread_id` some test used in a
+*previous* pytest invocation against the same Postgres container can't
+resume stale state instead of starting fresh.
+
 ## Secrets & security
 
 This repository is public. The rules that keeps it safe to be public:
@@ -383,6 +414,9 @@ src/opspilot/
   agent/schemas.py     Diagnosis output, evidence trail, investigation result
   agent/tracing.py     Langfuse tracing: redaction, trace/span/generation/
                        tool-call context managers, trace URL lookup
+  agent/checkpointer.py Durable Postgres checkpointer: singleton + fresh-
+                       instance factory, conn-string conversion, msgpack
+                       allowlist (opspilot.agent.checkpointer)
   routers/incidents.py Incident CRUD, run/approvals endpoints, timeline
   routers/eval_runs.py Read-only API over eval_runs/*.json for the dashboard
   memory.py             Service-scoped memory: write policy, consolidation,
@@ -415,7 +449,8 @@ tests/                 Auth, migration round-trip, seed determinism +
                        (write-policy gate, outcome derivation, consolidation,
                        cross-service isolation, retrieval ranking, read/admin
                        endpoints), the memory-impact eval-harness comparison
-                       (test_memory_eval_impact.py)
+                       (test_memory_eval_impact.py), the checkpointer kill-
+                       and-resume harness (test_checkpointer.py)
 web/                   Next.js dashboard (incident list, pending-approvals
                        queue, graph-state view, approval form, timeline,
                        eval run list + per-run scorecard with trace links,

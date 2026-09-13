@@ -3,6 +3,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from opspilot.agent.checkpointer import get_postgres_checkpointer
 from opspilot.db import SessionLocal
 from opspilot.main import app
 from opspilot.models import Scenario
@@ -22,6 +23,22 @@ def _seed_once():
         seed_all(session)
     finally:
         session.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clear_checkpoints_once():
+    """Checkpointing is durable across process restarts as of v0.5 Phase 1
+    (opspilot.agent.checkpointer) — that's the whole point. Which means a
+    fixed thread_id a test used in some *previous* pytest invocation
+    against this same Postgres container would otherwise still be sitting
+    there, and a graph invoked with that thread_id would resume stale
+    state instead of starting fresh. Truncate once per session so every
+    test run starts from a clean checkpoint store, the same way the rest
+    of this suite's data is expected to be reproducible from run to run.
+    """
+    checkpointer = get_postgres_checkpointer()  # ensures setup() has run first
+    with checkpointer.conn.connection() as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE checkpoints, checkpoint_writes, checkpoint_blobs")
 
 
 @pytest.fixture
